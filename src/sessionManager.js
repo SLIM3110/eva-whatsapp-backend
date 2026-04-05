@@ -90,14 +90,19 @@ async function initClient(agentId) {
 async function restoreAllSessions() {
   const sessionsDir = path.join(__dirname, '..', 'sessions');
   if (!fs.existsSync(sessionsDir)) return;
-  const dirs = fs.readdirSync(sessionsDir);
+  const dirs = fs.readdirSync(sessionsDir).filter(d => d.startsWith('agent-'));
+
+  console.log(`Restoring ${dirs.length} sessions with staggered startup...`);
+
   for (const dir of dirs) {
-    if (dir.startsWith('agent-')) {
-      const agentId = dir.replace('agent-', '');
-      console.log(`Restoring session for agent: ${agentId}`);
-      await initClient(agentId);
-    }
+    const agentId = dir.replace('agent-', '');
+    console.log(`Restoring session for agent: ${agentId}`);
+    await initClient(agentId);
+    // Wait 3 seconds between each agent to avoid RAM spike
+    await new Promise(r => setTimeout(r, 3000));
   }
+
+  console.log('All sessions restored');
 }
 
 async function createSession(agentId) {
