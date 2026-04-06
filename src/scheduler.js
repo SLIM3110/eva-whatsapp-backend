@@ -135,4 +135,4 @@ function startScheduler() {
   setInterval(tick, 60000);
 }
 
-module.exports = { startScheduler };
+module.exports = { startScheduler, tick };
