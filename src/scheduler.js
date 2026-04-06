@@ -4,11 +4,18 @@ const sessionManager = require('./sessionManager');
 const TEST_MODE = false;
 
 async function supabaseFetch(path, options = {}) {
-  const res = await fetch(`${process.env.SUPABASE_URL}/rest/v1${path}`, {
+  const baseUrl = process.env.SUPABASE_URL || 'https://guwmfmwyqrwvufchkzfc.supabase.co';
+  const serviceKey = process.env.SUPABASE_SERVICE_KEY;
+
+  if (!serviceKey) {
+    throw new Error('SUPABASE_SERVICE_KEY is not set in Railway variables');
+  }
+
+  const res = await fetch(`${baseUrl}/rest/v1${path}`, {
     ...options,
     headers: {
-      'apikey': process.env.SUPABASE_SERVICE_KEY,
-      'Authorization': `Bearer ${process.env.SUPABASE_SERVICE_KEY}`,
+      'apikey': serviceKey,
+      'Authorization': `Bearer ${serviceKey}`,
       'Content-Type': 'application/json',
       ...(options.headers || {})
     }
@@ -125,7 +132,7 @@ function startScheduler() {
   } else {
     console.log('Scheduler running in PRODUCTION MODE — 9am to 7pm UAE, 2 to 5 min gaps');
   }
-  setInterval(tick, TEST_MODE ? 10000 : 60000);
+  setInterval(tick, 60000);
 }
 
 module.exports = { startScheduler };

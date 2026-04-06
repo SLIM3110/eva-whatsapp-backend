@@ -9,8 +9,9 @@ const statuses = new Map();
 
 async function updateSupabaseStatus(agentId, status) {
   try {
+    const baseUrl = process.env.SUPABASE_URL || 'https://guwmfmwyqrwvufchkzfc.supabase.co';
     await fetch(
-      `${process.env.SUPABASE_URL}/rest/v1/profiles?id=eq.${agentId}`,
+      `${baseUrl}/rest/v1/profiles?id=eq.${agentId}`,
       {
         method: 'PATCH',
         headers: {
