@@ -1,7 +1,7 @@
 const sessionManager = require('./sessionManager');
 
 // SET THIS TO true FOR TESTING, false FOR PRODUCTION
-const TEST_MODE = true;
+const TEST_MODE = false;
 
 async function supabaseFetch(path, options = {}) {
   const res = await fetch(`${process.env.SUPABASE_URL}/rest/v1${path}`, {
@@ -17,6 +17,8 @@ async function supabaseFetch(path, options = {}) {
 }
 
 async function tick() {
+  console.log('ENV CHECK - SUPABASE_URL:', process.env.SUPABASE_URL);
+  console.log('ENV CHECK - SUPABASE_SERVICE_KEY:', process.env.SUPABASE_SERVICE_KEY ? 'SET' : 'MISSING');
   if (!TEST_MODE) {
     const uaeTime = new Date().toLocaleString('en-US', { timeZone: 'Asia/Dubai' });
     const uaeHour = new Date(uaeTime).getHours();
