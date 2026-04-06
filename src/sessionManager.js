@@ -148,9 +148,23 @@ async function sendMessage(agentId, number, message) {
   if (!client || statuses.get(agentId) !== 'connected') {
     throw new Error('Session not connected for this agent');
   }
-  const chatId = `${number.replace(/\D/g, '')}@c.us`;
-  const result = await client.sendMessage(chatId, message);
-  return { messageId: result.id._serialized, timestamp: new Date().toISOString() };
+
+  try {
+    const chatId = `${number.replace(/\D/g, '')}@c.us`;
+    const result = await client.sendMessage(chatId, message);
+    return { messageId: result.id._serialized, timestamp: new Date().toISOString() };
+  } catch (err) {
+    if (err.message.includes('detached Frame') || err.message.includes('Session closed') || err.message.includes('Target closed')) {
+      console.log(`Detached frame for agent ${agentId} — marking disconnected and attempting reinit`);
+      statuses.set(agentId, 'disconnected');
+      await updateSupabaseStatus(agentId, 'disconnected');
+      clients.delete(agentId);
+      // Attempt to reinitialise after 5 seconds
+      setTimeout(() => initClient(agentId), 5000);
+      throw new Error('Session detached — reconnecting automatically. Please rescan QR if this persists.');
+    }
+    throw err;
+  }
 }
 
 async function disconnectSession(agentId) {
