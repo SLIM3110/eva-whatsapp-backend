@@ -1,4 +1,4 @@
-const { default: makeWASocket, DisconnectReason, useMultiFileAuthState } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, DisconnectReason, useMultiFileAuthState, Browsers } = require('@whiskeysockets/baileys');
 const path = require('path');
 const fs = require('fs');
 const QRCode = require('qrcode');
@@ -59,7 +59,11 @@ async function initClient(agentId) {
     auth: state,
     printQRInTerminal: false,
     logger: pino({ level: 'silent' }),
-    browser: ['EVA Real Estate', 'Chrome', '1.0.0']
+    browser: Browsers.macOS('Chrome'),
+    connectTimeoutMs: 30000,
+    keepAliveIntervalMs: 15000,
+    retryRequestDelayMs: 2000,
+    maxMsgRetryCount: 3,
   });
 
   clients.set(agentId, sock);
@@ -94,7 +98,10 @@ async function initClient(agentId) {
 
     if (connection === 'close') {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
-      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+      // 405 = policy violation (cloud IP block), 403 = banned — don't reconnect
+      const shouldReconnect = statusCode !== DisconnectReason.loggedOut
+        && statusCode !== 405
+        && statusCode !== 403;
       console.log(`Agent ${agentId} disconnected. Code: ${statusCode}. Reconnect: ${shouldReconnect}`);
       statuses.set(agentId, 'disconnected');
       await updateSupabaseStatus(agentId, 'disconnected');
