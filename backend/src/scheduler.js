@@ -3,29 +3,40 @@ const sessionManager = require('./sessionManager');
 // SET THIS TO true FOR TESTING, false FOR PRODUCTION
 const TEST_MODE = false;
 
+const FETCH_TIMEOUT_MS = 10000;
+
 async function supabaseFetch(path, options = {}) {
-  const baseUrl = process.env.SUPABASE_URL || 'https://guwmfmwyqrwvufchkzfc.supabase.co';
+  const baseUrl = process.env.SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_KEY;
 
-  if (!serviceKey) {
-    throw new Error('SUPABASE_SERVICE_KEY is not set in Railway variables');
-  }
+  if (!baseUrl) throw new Error('SUPABASE_URL is not set in Railway variables');
+  if (!serviceKey) throw new Error('SUPABASE_SERVICE_KEY is not set in Railway variables');
 
-  const res = await fetch(`${baseUrl}/rest/v1${path}`, {
-    ...options,
-    headers: {
-      'apikey': serviceKey,
-      'Authorization': `Bearer ${serviceKey}`,
-      'Content-Type': 'application/json',
-      ...(options.headers || {})
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
+  try {
+    const res = await fetch(`${baseUrl}/rest/v1${path}`, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        'apikey': serviceKey,
+        'Authorization': `Bearer ${serviceKey}`,
+        'Content-Type': 'application/json',
+        ...(options.headers || {})
+      }
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Supabase ${options.method || 'GET'} ${path} failed [${res.status}]: ${body}`);
     }
-  });
-  return res;
+    return res;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function tick() {
-  console.log('ENV CHECK - SUPABASE_URL:', process.env.SUPABASE_URL);
-  console.log('ENV CHECK - SUPABASE_SERVICE_KEY:', process.env.SUPABASE_SERVICE_KEY ? 'SET' : 'MISSING');
   if (!TEST_MODE) {
     const uaeTime = new Date().toLocaleString('en-US', { timeZone: 'Asia/Dubai' });
     const uaeHour = new Date(uaeTime).getHours();
@@ -36,15 +47,19 @@ async function tick() {
   }
 
   const agentsRes = await supabaseFetch(
-    '/profiles?whatsapp_session_status=eq.connected&is_active=eq.true&select=id'
+    '/profiles?whatsapp_session_status=eq.connected&is_active=eq.true&role=eq.agent&select=id'
   );
   const agents = await agentsRes.json();
   if (!Array.isArray(agents)) return;
 
-  for (const agent of agents) {
-    try { await processAgent(agent.id); }
-    catch (e) { console.error(`Scheduler error for agent ${agent.id}:`, e.message); }
-  }
+  // Process all agents in parallel
+  await Promise.all(
+    agents.map(agent =>
+      processAgent(agent.id).catch(e =>
+        console.error(`Scheduler error for agent ${agent.id}:`, e.message)
+      )
+    )
+  );
 }
 
 async function processAgent(agentId) {
@@ -95,25 +110,30 @@ async function processAgent(agentId) {
   try {
     await sessionManager.sendMessage(agentId, contact.number_1, contact.generated_message);
 
+    const now = new Date().toISOString();
+
     await supabaseFetch(`/owner_contacts?id=eq.${contact.id}`, {
       method: 'PATCH',
-      body: JSON.stringify({ message_status: 'sent' })
+      headers: { 'Prefer': 'return=minimal' },
+      body: JSON.stringify({ message_status: 'sent', sent_at: now })
     });
 
     await supabaseFetch('/messages_log', {
       method: 'POST',
+      headers: { 'Prefer': 'return=minimal' },
       body: JSON.stringify({
         contact_id: contact.id,
         agent_id: agentId,
         number_used: contact.number_1,
         message_text: contact.generated_message,
-        delivery_status: 'sent'
+        delivery_status: 'sent',
+        sent_at: now
       })
     });
 
     await supabaseFetch('/rpc/increment_batch_sent', {
       method: 'POST',
-      body: JSON.stringify({ batch_id: contact.uploaded_batch_id })
+      body: JSON.stringify({ p_batch_id: contact.uploaded_batch_id })
     });
 
     console.log(`${TEST_MODE ? '[TEST MODE] ' : ''}Sent to ${contact.number_1} for agent ${agentId}`);
@@ -121,8 +141,9 @@ async function processAgent(agentId) {
     console.error(`Send failed for contact ${contact.id}:`, err.message);
     await supabaseFetch(`/owner_contacts?id=eq.${contact.id}`, {
       method: 'PATCH',
+      headers: { 'Prefer': 'return=minimal' },
       body: JSON.stringify({ message_status: 'failed' })
-    });
+    }).catch(e => console.error('Failed to mark contact as failed:', e.message));
   }
 }
 

@@ -3,15 +3,33 @@ const path = require('path');
 const fs = require('fs');
 const QRCode = require('qrcode');
 const pino = require('pino');
+const storage = require('./storage');
 
 const clients = new Map();
 const qrCodes = new Map();
 const statuses = new Map();
 
+// Debounce timers for creds.update uploads — at most one upload per 10s per agent
+const uploadTimers = new Map();
+
+function scheduleUpload(agentId) {
+  if (uploadTimers.has(agentId)) return;
+  const timer = setTimeout(async () => {
+    uploadTimers.delete(agentId);
+    try { await storage.uploadSession(agentId); }
+    catch (e) { console.error(`Debounced upload failed for agent ${agentId}:`, e.message); }
+  }, 10000);
+  uploadTimers.set(agentId, timer);
+}
+
 async function updateSupabaseStatus(agentId, status) {
   try {
-    const baseUrl = process.env.SUPABASE_URL || 'https://guwmfmwyqrwvufchkzfc.supabase.co';
+    const baseUrl = process.env.SUPABASE_URL;
     const serviceKey = process.env.SUPABASE_SERVICE_KEY;
+    if (!baseUrl || !serviceKey) {
+      console.error('SUPABASE_URL or SUPABASE_SERVICE_KEY not set — cannot update status');
+      return;
+    }
     const res = await fetch(
       `${baseUrl}/rest/v1/profiles?id=eq.${agentId}`,
       {
@@ -47,7 +65,11 @@ async function initClient(agentId) {
   clients.set(agentId, sock);
   statuses.set(agentId, 'pending');
 
-  sock.ev.on('creds.update', saveCreds);
+  // Save creds locally, then schedule a debounced upload to Supabase Storage
+  sock.ev.on('creds.update', async () => {
+    await saveCreds();
+    scheduleUpload(agentId);
+  });
 
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
@@ -65,6 +87,9 @@ async function initClient(agentId) {
       qrCodes.delete(agentId);
       console.log(`Agent ${agentId} connected`);
       await updateSupabaseStatus(agentId, 'connected');
+      // Immediately persist the freshly authenticated session
+      try { await storage.uploadSession(agentId); }
+      catch (e) { console.error(`Session upload on connect failed for agent ${agentId}:`, e.message); }
     }
 
     if (connection === 'close') {
@@ -91,18 +116,38 @@ async function initClient(agentId) {
 }
 
 async function restoreAllSessions() {
-  const sessionsDir = path.join(__dirname, '..', 'sessions');
-  if (!fs.existsSync(sessionsDir)) return;
-  const dirs = fs.readdirSync(sessionsDir).filter(d => d.startsWith('agent-'));
-  console.log(`Restoring ${dirs.length} sessions...`);
-  for (const dir of dirs) {
-    const agentId = dir.replace('agent-', '');
+  await storage.ensureBucket();
+
+  // Fetch the list of agents with sessions stored in Supabase Storage
+  const supabaseClient = require('@supabase/supabase-js').createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_SERVICE_KEY
+  );
+  const { data: agentFolders, error } = await supabaseClient.storage
+    .from('whatsapp-sessions')
+    .list('', { limit: 1000 });
+
+  if (error) {
+    console.error('Failed to list sessions from Supabase Storage:', error.message);
+    return;
+  }
+
+  if (!agentFolders || agentFolders.length === 0) {
+    console.log('No sessions found in Supabase Storage');
+    return;
+  }
+
+  console.log(`Restoring ${agentFolders.length} sessions from Supabase Storage...`);
+
+  for (const folder of agentFolders) {
+    const agentId = folder.name;
     console.log(`Restoring session for agent: ${agentId}`);
     try {
+      await storage.downloadSession(agentId);
       await initClient(agentId);
     } catch (e) {
       console.error(`Failed to restore session for agent ${agentId}:`, e.message);
-      // Clear corrupt session so next start generates fresh QR
+      // Clear corrupt local session so next QR scan starts fresh
       const sessionPath = path.join(__dirname, '..', 'sessions', `agent-${agentId}`);
       if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true });
     }
@@ -123,9 +168,15 @@ async function createSession(agentId) {
     qrCodes.delete(agentId);
   }
 
-  // If stale session files exist but socket is gone, clear them so Baileys starts fresh
+  // Try to restore from Supabase Storage first
   const sessionPath = path.join(__dirname, '..', 'sessions', `agent-${agentId}`);
   const credsFile = path.join(sessionPath, 'creds.json');
+
+  if (!fs.existsSync(credsFile)) {
+    // No local creds — try downloading from Supabase Storage
+    try { await storage.downloadSession(agentId); } catch (e) {}
+  }
+
   if (fs.existsSync(credsFile)) {
     try {
       await initClient(agentId);
@@ -193,6 +244,7 @@ async function disconnectSession(agentId) {
   statuses.set(agentId, 'disconnected');
   const sessionPath = path.join(__dirname, '..', 'sessions', `agent-${agentId}`);
   if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true });
+  await storage.deleteSession(agentId);
   await updateSupabaseStatus(agentId, 'disconnected');
 }
 

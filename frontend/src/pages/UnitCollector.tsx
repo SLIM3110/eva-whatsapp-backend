@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
+import Papa from 'papaparse';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -91,8 +92,17 @@ const UnitCollector = () => {
   };
 
   const parseCSV = (text: string) => {
-    const lines = text.trim().split('\n');
-    const rawHeaders = lines[0].split(',').map(h => h.trim());
+    const result = Papa.parse<Record<string, string>>(text, {
+      header: true,
+      skipEmptyLines: true,
+      transformHeader: h => h.trim(),
+    });
+
+    if (result.errors.length > 0) {
+      throw new Error(`CSV parse error: ${result.errors[0].message}`);
+    }
+
+    const rawHeaders = result.meta.fields || [];
     const headers = rawHeaders.map(h => h.toLowerCase());
 
     const phoneColIndexes = headers.map((h, i) => isPhoneColumn(h) ? i : -1).filter(i => i >= 0);
@@ -104,11 +114,10 @@ const UnitCollector = () => {
     const buildingColIdx = headers.findIndex(h => h.includes('building') || h.includes('tower') || h.includes('property'));
     const unitColIdx = headers.findIndex(h => h.includes('unit') || h.includes('apartment') || h.includes('flat'));
 
-    const dataRows = lines.slice(1).filter(l => l.trim());
     const contacts: { owner_name: string; building_name: string; unit_number: string; phone: string }[] = [];
 
-    for (const line of dataRows) {
-      const vals = line.split(',').map(v => v.trim());
+    for (const row of result.data) {
+      const vals = rawHeaders.map(h => (row[h] || '').trim());
       const ownerName = nameColIdx >= 0 ? (vals[nameColIdx] || 'Unknown') : 'Unknown';
       const buildingName = buildingColIdx >= 0 ? (vals[buildingColIdx] || '') : '';
       const unitNumber = unitColIdx >= 0 ? (vals[unitColIdx] || '') : '';
