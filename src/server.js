@@ -3,7 +3,6 @@ const express = require('express');
 const cors = require('cors');
 const { restoreAllSessions } = require('./sessionManager');
 const { startScheduler } = require('./scheduler');
-const { ensureBucket } = require('./storage');
 
 const app = express();
 
@@ -26,7 +25,6 @@ process.on('unhandledRejection', (err) => console.error('Unhandled rejection:', 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
   console.log(`EVA WhatsApp Backend running on port ${PORT}`);
-  await ensureBucket();
   await restoreAllSessions();
   startScheduler();
 });
