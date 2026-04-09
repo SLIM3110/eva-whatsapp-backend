@@ -37,9 +37,13 @@ async function initClient(agentId) {
       clientId: `agent-${agentId}`,
       dataPath: path.join(__dirname, '..', 'sessions')
     }),
+    webVersionCache: {
+      type: 'remote',
+      remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html'
+    },
     puppeteer: {
       executablePath: '/usr/bin/chromium-browser',
-      protocolTimeout: 60000,
+      protocolTimeout: 120000,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
