@@ -38,7 +38,8 @@ async function initClient(agentId) {
       dataPath: path.join(__dirname, '..', 'sessions')
     }),
     puppeteer: {
-      executablePath: puppeteer.executablePath(),
+      executablePath: '/usr/bin/chromium-browser',
+      protocolTimeout: 60000,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
