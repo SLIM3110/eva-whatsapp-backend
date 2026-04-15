@@ -23,9 +23,15 @@ router.post('/start', auth, async (req, res) => {
 router.get('/status', auth, async (req, res) => {
   const { agentId } = req.query;
   if (!agentId) return res.status(400).json({ error: true, message: 'agentId required' });
-  const status = sm.getStatus(agentId);
-  const qrCode = status === 'pending' ? sm.getQR(agentId) : null;
-  res.json({ agentId, status, qrCode });
+  try {
+    const result = await sm.getStatus(agentId);
+    if (typeof result === 'object') {
+      return res.json({ agentId, status: result.status, qrCode: result.qrCode });
+    }
+    res.json({ agentId, status: result, qrCode: null });
+  } catch (e) {
+    res.status(500).json({ error: true, message: e.message });
+  }
 });
 
 router.post('/disconnect', auth, async (req, res) => {
