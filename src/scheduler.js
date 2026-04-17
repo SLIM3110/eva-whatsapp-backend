@@ -133,7 +133,7 @@ async function processAgent(agentId) {
 
     await supabaseFetch('/rpc/increment_batch_sent', {
       method: 'POST',
-      body: JSON.stringify({ p_batch_id: contact.uploaded_batch_id })
+      body: JSON.stringify({ batch_id: contact.uploaded_batch_id })
     });
 
     console.log(`${TEST_MODE ? '[TEST MODE] ' : ''}Sent to ${contact.number_1} for agent ${agentId}`);
