@@ -47,7 +47,7 @@ async function tick() {
   }
 
   const agentsRes = await supabaseFetch(
-    '/profiles?whatsapp_session_status=eq.connected&is_active=eq.true&role=eq.agent&select=id'
+    '/profiles?whatsapp_session_status=eq.connected&is_active=eq.true&role=in.(agent,super_admin)&select=id'
   );
   const agents = await agentsRes.json();
   if (!Array.isArray(agents)) return;
@@ -67,7 +67,7 @@ async function processAgent(agentId) {
 
   // Check daily cap
   const countRes = await supabaseFetch(
-    `/messages_log?agent_id=eq.${agentId}&sent_at=gte.${todayUAE}T00:00:00+04:00&select=id`,
+    `/messages_log?agent_id=eq.${agentId}&sent_at=gte.${todayUAE}T00:00:00%2B04:00&select=id`,
     { headers: { 'Prefer': 'count=exact' } }
   );
   const range = countRes.headers.get('content-range');
