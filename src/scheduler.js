@@ -40,7 +40,7 @@ async function tick() {
   if (!TEST_MODE) {
     const uaeTime = new Date().toLocaleString('en-US', { timeZone: 'Asia/Dubai' });
     const uaeHour = new Date(uaeTime).getHours();
-    if (uaeHour < 9 || uaeHour >= 19) {
+    if (uaeHour < 9 || uaeHour >= 21) {
       console.log(`Scheduler: outside UAE business hours (${uaeHour}:00), skipping`);
       return;
     }
@@ -151,7 +151,7 @@ function startScheduler() {
   if (TEST_MODE) {
     console.log('Scheduler running in TEST MODE — no time restrictions, no gaps between messages');
   } else {
-    console.log('Scheduler running in PRODUCTION MODE — 9am to 7pm UAE, 2 to 5 min gaps');
+    console.log('Scheduler running in PRODUCTION MODE — 9am to 9pm UAE, 2 to 5 min gaps');
   }
   setInterval(tick, 60000);
 }
