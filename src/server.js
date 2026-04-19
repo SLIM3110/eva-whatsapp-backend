@@ -18,6 +18,7 @@ app.use(express.json());
 app.use('/api/health', require('./routes/health'));
 app.use('/api/session', require('./routes/session'));
 app.use('/api/message', require('./routes/message'));
+app.use('/webhook', require('./routes/webhook'));
 
 process.on('uncaughtException', (err) => console.error('Uncaught exception:', err));
 process.on('unhandledRejection', (err) => console.error('Unhandled rejection:', err));
