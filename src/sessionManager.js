@@ -38,17 +38,12 @@ async function getAgentCredentials(agentId) {
 }
 
 async function registerWebhook(apiUrl, instanceId, token) {
-  const backendUrl = process.env.BACKEND_URL;
-  if (!backendUrl) {
-    console.warn('BACKEND_URL not set — skipping webhook registration');
-    return;
-  }
   try {
     const res = await fetch(`${apiUrl}/waInstance${instanceId}/setSettings/${token}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        webhookUrl: `${backendUrl}/webhook/incoming`,
+        webhookUrl: 'https://api.evaintelligencehub.online/webhook/incoming',
         webhookUrlToken: '',
         incomingWebhook: 'yes'
       })

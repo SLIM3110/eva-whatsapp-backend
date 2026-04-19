@@ -2,14 +2,10 @@ require('dotenv').config();
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
-const BACKEND_URL = process.env.BACKEND_URL;
+const WEBHOOK_URL = 'https://api.evaintelligencehub.online/webhook/incoming';
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
   console.error('SUPABASE_URL and SUPABASE_SERVICE_KEY must be set');
-  process.exit(1);
-}
-if (!BACKEND_URL) {
-  console.error('BACKEND_URL must be set (e.g. https://your-app.up.railway.app)');
   process.exit(1);
 }
 
@@ -35,7 +31,7 @@ async function registerWebhook(profile) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      webhookUrl: `${BACKEND_URL}/webhook/incoming`,
+      webhookUrl: WEBHOOK_URL,
       webhookUrlToken: '',
       incomingWebhook: 'yes'
     })
@@ -50,7 +46,7 @@ async function registerWebhook(profile) {
 }
 
 (async () => {
-  console.log(`Backfilling webhooks → ${BACKEND_URL}/webhook/incoming\n`);
+  console.log(`Backfilling webhooks → ${WEBHOOK_URL}\n`);
   const profiles = await fetchProfiles();
   console.log(`Found ${profiles.length} profile(s) with Green API credentials\n`);
 
