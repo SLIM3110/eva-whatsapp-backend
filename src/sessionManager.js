@@ -37,6 +37,33 @@ async function getAgentCredentials(agentId) {
   return profiles[0];
 }
 
+async function registerWebhook(apiUrl, instanceId, token) {
+  const backendUrl = process.env.BACKEND_URL;
+  if (!backendUrl) {
+    console.warn('BACKEND_URL not set — skipping webhook registration');
+    return;
+  }
+  try {
+    const res = await fetch(`${apiUrl}/waInstance${instanceId}/setSettings/${token}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        webhookUrl: `${backendUrl}/webhook/incoming`,
+        webhookUrlToken: '',
+        incomingWebhook: 'yes'
+      })
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      console.error(`Webhook registration failed for instance ${instanceId}: ${body}`);
+    } else {
+      console.log(`Webhook registered for instance ${instanceId}`);
+    }
+  } catch (e) {
+    console.error(`Webhook registration error for instance ${instanceId}:`, e.message);
+  }
+}
+
 async function createSession(agentId) {
   const creds = await getAgentCredentials(agentId);
   if (!creds) {
@@ -51,6 +78,7 @@ async function createSession(agentId) {
   if (stateData.stateInstance === 'authorized') {
     statuses.set(agentId, 'connected');
     await updateSupabaseStatus(agentId, 'connected');
+    await registerWebhook(green_api_url, green_api_instance_id, green_api_token);
     return { status: 'already_connected' };
   }
 
@@ -60,6 +88,7 @@ async function createSession(agentId) {
   if (qrData.type === 'alreadyLogged') {
     statuses.set(agentId, 'connected');
     await updateSupabaseStatus(agentId, 'connected');
+    await registerWebhook(green_api_url, green_api_instance_id, green_api_token);
     return { status: 'already_connected' };
   }
 
@@ -85,8 +114,12 @@ async function getStatus(agentId) {
     const data = await res.json();
 
     if (data.stateInstance === 'authorized') {
+      const wasConnected = statuses.get(agentId) === 'connected';
       statuses.set(agentId, 'connected');
       await updateSupabaseStatus(agentId, 'connected');
+      if (!wasConnected) {
+        await registerWebhook(creds.apiUrl, creds.idInstance, creds.apiTokenInstance);
+      }
       return { status: 'connected', qrCode: null };
     }
 
