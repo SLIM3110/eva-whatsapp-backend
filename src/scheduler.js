@@ -86,6 +86,7 @@ async function processAgent(agentId) {
   }
 
   // Time gap between messages
+  // Base window: 5–15 min (300–900 s). 20% of the time a longer spike: 15–30 min (900–1800 s).
   if (!TEST_MODE) {
     const lastRes = await supabaseFetch(
       `/messages_log?agent_id=eq.${agentId}&order=sent_at.desc&limit=1&select=sent_at`
@@ -93,7 +94,10 @@ async function processAgent(agentId) {
     const lastLogs = await lastRes.json();
     if (lastLogs.length > 0) {
       const secondsSinceLast = (Date.now() - new Date(lastLogs[0].sent_at).getTime()) / 1000;
-      const randomWait = 120 + Math.floor(Math.random() * 180);
+      const spike = Math.random() < 0.20;
+      const randomWait = spike
+        ? 900  + Math.floor(Math.random() * 900)   // 15–30 min spike
+        : 300  + Math.floor(Math.random() * 600);  // 5–15 min standard
       if (secondsSinceLast < randomWait) return;
     }
   }
@@ -106,6 +110,21 @@ async function processAgent(agentId) {
   if (!contacts.length) return;
 
   const contact = contacts[0];
+
+  // Duplicate-number guard: skip if this phone number was already sent a message
+  const dupRes = await supabaseFetch(
+    `/messages_log?number_used=eq.${encodeURIComponent(contact.number_1)}&limit=1&select=id`
+  );
+  const dupRows = await dupRes.json();
+  if (dupRows.length > 0) {
+    console.log(`Skipping duplicate number ${contact.number_1} for agent ${agentId}`);
+    await supabaseFetch(`/owner_contacts?id=eq.${contact.id}`, {
+      method: 'PATCH',
+      headers: { 'Prefer': 'return=minimal' },
+      body: JSON.stringify({ message_status: 'duplicate' })
+    });
+    return;
+  }
 
   try {
     await sessionManager.sendMessage(agentId, contact.number_1, contact.generated_message);
@@ -151,7 +170,7 @@ function startScheduler() {
   if (TEST_MODE) {
     console.log('Scheduler running in TEST MODE — no time restrictions, no gaps between messages');
   } else {
-    console.log('Scheduler running in PRODUCTION MODE — 9am to 9pm UAE, 2 to 5 min gaps');
+    console.log('Scheduler running in PRODUCTION MODE — 9am to 9pm UAE, 5–15 min gaps (20% chance 15–30 min spike)');
   }
   setInterval(tick, 60000);
 }
