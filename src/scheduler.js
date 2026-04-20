@@ -5,6 +5,38 @@ const TEST_MODE = false;
 
 const FETCH_TIMEOUT_MS = 10000;
 
+// Strip all non-digits from a phone number string
+function normalizePhone(num) {
+  return String(num || '').replace(/\D/g, '');
+}
+
+// Return every plausible formatting variant of a number so we catch
+// mismatches like +971501234567 / 971501234567 / 0501234567 / 00971501234567
+function phoneVariants(num) {
+  const digits = normalizePhone(num);
+  const variants = new Set([digits, '+' + digits]);
+  // UAE country code stripping
+  if (digits.startsWith('971') && digits.length > 9) {
+    const local = digits.slice(3);
+    variants.add(local);
+    variants.add('0' + local);
+    variants.add('00971' + local);
+  } else if (digits.startsWith('00971') && digits.length > 11) {
+    const local = digits.slice(5);
+    variants.add(local);
+    variants.add('0' + local);
+    variants.add('971' + local);
+    variants.add('+971' + local);
+  } else if (digits.startsWith('0') && digits.length >= 9) {
+    const local = digits.slice(1);
+    variants.add(local);
+    variants.add('971' + local);
+    variants.add('+971' + local);
+    variants.add('00971' + local);
+  }
+  return Array.from(variants);
+}
+
 async function supabaseFetch(path, options = {}) {
   const baseUrl = process.env.SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_KEY;
@@ -63,6 +95,18 @@ async function tick() {
 }
 
 async function processAgent(agentId) {
+  // Reset any contacts stuck in 'processing' for more than 5 minutes
+  // (can happen if the server crashed mid-send).
+  const stuckCutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+  await supabaseFetch(
+    `/owner_contacts?assigned_agent=eq.${agentId}&message_status=eq.processing&updated_at=lt.${stuckCutoff}`,
+    {
+      method: 'PATCH',
+      headers: { 'Prefer': 'return=minimal' },
+      body: JSON.stringify({ message_status: 'pending' })
+    }
+  ).catch(e => console.error(`Failed to reset stuck contacts for agent ${agentId}:`, e.message));
+
   const todayUAE = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Dubai' });
 
   // Check daily cap
@@ -111,13 +155,36 @@ async function processAgent(agentId) {
 
   const contact = contacts[0];
 
-  // Duplicate-number guard: skip if this phone number was already sent a message
-  const dupRes = await supabaseFetch(
-    `/messages_log?number_used=eq.${encodeURIComponent(contact.number_1)}&limit=1&select=id`
-  );
-  const dupRows = await dupRes.json();
-  if (dupRows.length > 0) {
-    console.log(`Skipping duplicate number ${contact.number_1} for agent ${agentId}`);
+  // Claim the contact immediately to prevent two overlapping ticks from both
+  // picking it up as pending (race condition guard).
+  await supabaseFetch(`/owner_contacts?id=eq.${contact.id}`, {
+    method: 'PATCH',
+    headers: { 'Prefer': 'return=minimal' },
+    body: JSON.stringify({ message_status: 'processing' })
+  });
+
+  // Build all phone number variants to handle format mismatches
+  // (+971…, 971…, 0…, 00971…) across both tables.
+  const variants = phoneVariants(contact.number_1);
+  const orLog     = variants.map(v => `number_used.eq.${encodeURIComponent(v)}`).join(',');
+  const orContact = variants.map(v => `number_1.eq.${encodeURIComponent(v)}`).join(',');
+
+  // 1. Check messages_log — catches any number that was ever successfully sent
+  const [dupLogRes, dupContactRes] = await Promise.all([
+    supabaseFetch(`/messages_log?or=(${orLog})&limit=1&select=id`),
+    // 2. Check owner_contacts — catches duplicates within the same upload batch
+    //    (same number appears twice; one already sent/processing/duplicate)
+    supabaseFetch(
+      `/owner_contacts?or=(${orContact})&message_status=in.(sent,processing,duplicate)&id=neq.${contact.id}&limit=1&select=id`
+    ),
+  ]);
+
+  const dupLogs     = await dupLogRes.json();
+  const dupContacts = await dupContactRes.json();
+
+  if (dupLogs.length > 0 || dupContacts.length > 0) {
+    const source = dupLogs.length > 0 ? 'messages_log' : 'owner_contacts';
+    console.log(`Duplicate number ${contact.number_1} found in ${source} — skipping contact ${contact.id}`);
     await supabaseFetch(`/owner_contacts?id=eq.${contact.id}`, {
       method: 'PATCH',
       headers: { 'Prefer': 'return=minimal' },
