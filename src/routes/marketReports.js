@@ -22,8 +22,9 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 20 * 1024 * 1024 }, // 20 MB max
 }).fields([
-  { name: 'csv_file',   maxCount: 1 },
-  { name: 'image_file', maxCount: 1 },
+  { name: 'csv_file',         maxCount: 1 },
+  { name: 'rental_csv_file',  maxCount: 1 },
+  { name: 'image_file',       maxCount: 1 },
 ]);
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -86,14 +87,21 @@ router.post('/generate', (req, res) => {
       const primaryCommunity = communities[0];
       const ts = Date.now();
 
-      // ── 2. Save CSV to /tmp ───────────────────────────────────────────────
+      // ── 2. Save CSVs to /tmp ──────────────────────────────────────────────
       const csvPath = path.join(os.tmpdir(), `pm_${ts}.csv`);
       fs.writeFileSync(csvPath, req.files.csv_file[0].buffer);
       tempFiles.push(csvPath);
 
+      let rentalCsvPath = null;
+      if (req.files?.rental_csv_file?.[0]) {
+        rentalCsvPath = path.join(os.tmpdir(), `pm_rental_${ts}.csv`);
+        fs.writeFileSync(rentalCsvPath, req.files.rental_csv_file[0].buffer);
+        tempFiles.push(rentalCsvPath);
+      }
+
       // ── 3. Python: parse CSV + run all data analysis ──────────────────────
       const analyseArgsPath = writeTmpJson(
-        { communities, report_type },
+        { communities, report_type, rental_csv_path: rentalCsvPath },
         'analyse_args', ts
       );
       tempFiles.push(analyseArgsPath);
@@ -263,7 +271,7 @@ TASK — return ONLY valid JSON, no markdown fences, no commentary:
 
       // ── 9. Python: generate PDF ───────────────────────────────────────────
       const pdfPath      = path.join(os.tmpdir(), `eva_report_${ts}.pdf`);
-      const generateArgs = writeTmpJson({ data: reportData }, 'gen_args', ts);
+      const generateArgs = writeTmpJson({ data: reportData, rental_csv_path: rentalCsvPath }, 'gen_args', ts);
       tempFiles.push(pdfPath, generateArgs);
 
       try {

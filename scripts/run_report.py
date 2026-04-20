@@ -62,8 +62,16 @@ def mode_analyse(csv_path, args):
         emit({'error': f'CSV parse failed: {e}'})
         sys.exit(1)
 
-    # Rental DataFrame — not supported in v1 (agents upload sales CSV only)
-    rental_df = pd.DataFrame()
+    rental_csv = args.get('rental_csv_path')
+    if rental_csv and os.path.exists(rental_csv):
+        try:
+            from market_report_generator import parse_pm_rentals
+            rental_df = parse_pm_rentals(rental_csv)
+        except Exception as e:
+            rental_df = pd.DataFrame()
+            sys.stderr.write(f'Warning: could not parse rental CSV: {e}\n')
+    else:
+        rental_df = pd.DataFrame()
 
     if report_type == 'comparison' and len(communities) > 1:
         areas_data = []
@@ -93,11 +101,15 @@ def mode_generate(csv_path, pdf_output_path, args):
     """
     data = args.get('data', {})
 
+    rental_csv = args.get('rental_csv_path')
+    rental_csvs = [rental_csv] if rental_csv and os.path.exists(rental_csv) else []
+
     try:
         generate_report(
             output_path=pdf_output_path,
             data=data,
             txn_csvs=[csv_path],
+            rental_csvs=rental_csvs,
         )
         emit({'success': True, 'output': pdf_output_path})
     except Exception as e:
