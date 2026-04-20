@@ -232,7 +232,7 @@ TASK — return ONLY valid JSON, no markdown fences, no commentary:
       // ── 7. Call Gemini ────────────────────────────────────────────────────
       let geminiData = {};
       try {
-        const model  = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+        const model  = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
         const parts  = [{ text: geminiPrompt }];
         if (imageBase64 && personalisation_prompt) {
           parts.push({ inlineData: { mimeType: imageMimeType, data: imageBase64 } });

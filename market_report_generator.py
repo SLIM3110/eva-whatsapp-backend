@@ -1011,8 +1011,9 @@ class EVADoc(BaseDocTemplate):
 def generate_report(output_path, data, txn_csvs=None, rental_csvs=None):
     if txn_csvs:
         communities = data.get('communities', [data.get('community','')])
-        all_txn  = pd.concat([parse_pm_transactions(p) for p in txn_csvs], ignore_index=True)
-        all_rent = pd.concat([parse_pm_rentals(p) for p in (rental_csvs or [])], ignore_index=True)
+        all_txn      = pd.concat([parse_pm_transactions(p) for p in txn_csvs], ignore_index=True)
+        rental_dfs   = [parse_pm_rentals(p) for p in (rental_csvs or [])]
+        all_rent     = pd.concat(rental_dfs, ignore_index=True) if rental_dfs else pd.DataFrame()
         if data.get('report_type') == 'comparison':
             data['areas_data'] = [analyse(all_txn, all_rent, c) for c in communities]
         else:

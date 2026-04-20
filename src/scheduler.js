@@ -99,7 +99,7 @@ async function processAgent(agentId) {
   // (can happen if the server crashed mid-send).
   const stuckCutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString();
   await supabaseFetch(
-    `/owner_contacts?assigned_agent=eq.${agentId}&message_status=eq.processing&updated_at=lt.${stuckCutoff}`,
+    `/owner_contacts?assigned_agent=eq.${agentId}&message_status=eq.processing&created_at=lt.${stuckCutoff}`,
     {
       method: 'PATCH',
       headers: { 'Prefer': 'return=minimal' },
