@@ -56,18 +56,19 @@ router.post('/generate', (req, res) => {
     try {
       // ── 1. Parse & validate form fields ──────────────────────────────────
       const {
-        report_type         = 'single',
-        community           = '',
-        communities: commJson = '[]',
-        report_period       = '',
-        agent_name          = 'EVA Real Estate',
-        agent_contact       = 'info@evadxb.com',
+        report_type            = 'single',
+        report_period          = '',
+        agent_name             = 'EVA Real Estate',
+        agent_contact          = 'info@evadxb.com',
         agent_id,
         custom_location_notes  = '',
         personalisation_prompt = '',
         agent_instruction      = '',
         service_charge_psf     = '',
       } = req.body;
+
+      // Accept both legacy 'community' and new 'community_name' field names
+      const community = req.body.community || req.body.community_name || '';
 
       if (!req.files?.csv_file?.[0]) {
         return res.status(400).json({ error: 'A Property Monitor CSV file is required.' });
@@ -76,8 +77,11 @@ router.post('/generate', (req, res) => {
         return res.status(400).json({ error: 'agent_id is required.' });
       }
 
+      // Comparison mode sends communities[] as repeated form entries
       const communities = report_type === 'comparison'
-        ? JSON.parse(commJson)
+        ? (Array.isArray(req.body['communities[]'])
+            ? req.body['communities[]']
+            : [req.body['communities[]']].filter(Boolean))
         : [community].filter(Boolean);
 
       if (communities.length === 0) {
