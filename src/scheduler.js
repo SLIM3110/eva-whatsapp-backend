@@ -229,25 +229,14 @@ async function processAgent(agentId) {
   }
 
   try {
-    const sendResult = await sessionManager.sendMessage(agentId, contact.number_1, contact.generated_message);
-
-    const batchRes  = await supabaseFetch(`/batches?id=eq.${contact.uploaded_batch_id}&select=send_poll`);
-    const batchRows = await batchRes.json();
-    const batchRow  = batchRows[0];
-    const shouldSendPoll = batchRow ? batchRow.send_poll !== false : true;
-
-    if (shouldSendPoll) {
-      const pollDelay = 4000 + Math.floor(Math.random() * 5000);
-      await new Promise(function(r) { setTimeout(r, pollDelay); });
-
-      await sessionManager.sendPoll(
-        agentId,
-        contact.number_1,
-        'Quick question -- what would you like to do with your property?',
-        ['Rent it out', 'Sell it', 'Send me market data', 'Remove me from this list'],
-        sendResult ? sendResult.messageId : null
-      ).catch(function(e) { console.warn(`[poll] Failed for ${contact.number_1}:`, e.message); });
-    }
+    // Send outreach message + poll in ONE call via Green API sendPoll.
+    // The 'message' field is the outreach text shown above the poll options.
+    const sendResult = await sessionManager.sendPoll(
+      agentId,
+      contact.number_1,
+      contact.generated_message,
+      ['🏠  Rent it out', '💰  Sell it', '📊  Send me market data', '❌  Remove me from this list']
+    );
 
     const now = new Date().toISOString();
 
