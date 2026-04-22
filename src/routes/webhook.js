@@ -6,29 +6,24 @@ const router  = express.Router();
 const FETCH_TIMEOUT_MS  = 10000;
 const GEMINI_TIMEOUT_MS = 18000;
 
-// ── Supabase helper ───────────────────────────────────────────────────────────
-
-async function supabaseFetch(path, options = {}) {
+async function supabaseFetch(path, options) {
+  options = options || {};
   const baseUrl    = process.env.SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_KEY;
-
   const controller = new AbortController();
-  const timer      = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-
+  const timer      = setTimeout(function() { controller.abort(); }, FETCH_TIMEOUT_MS);
   try {
-    const res = await fetch(`${baseUrl}/rest/v1${path}`, {
-      ...options,
+    const res = await fetch(baseUrl + '/rest/v1' + path, Object.assign({}, options, {
       signal: controller.signal,
-      headers: {
-        'apikey':        serviceKey,
-        'Authorization': `Bearer ${serviceKey}`,
-        'Content-Type':  'application/json',
-        ...(options.headers || {}),
-      },
-    });
+      headers: Object.assign({
+        'apikey': serviceKey,
+        'Authorization': 'Bearer ' + serviceKey,
+        'Content-Type': 'application/json',
+      }, options.headers || {}),
+    }));
     if (!res.ok) {
       const body = await res.text();
-      throw new Error(`Supabase ${options.method || 'GET'} ${path} [${res.status}]: ${body}`);
+      throw new Error('Supabase ' + (options.method || 'GET') + ' ' + path + ' [' + res.status + ']: ' + body);
     }
     return res;
   } finally {
@@ -36,23 +31,16 @@ async function supabaseFetch(path, options = {}) {
   }
 }
 
-// ── Green API send helper ─────────────────────────────────────────────────────
-
 async function sendViaGreenApi(agentCreds, toNumber, message) {
-  const { green_api_url, green_api_instance_id, green_api_token } = agentCreds;
-  const chatId = `${toNumber.replace(/\D/g, '')}@c.us`;
+  const chatId = toNumber.replace(/\D/g, '') + '@c.us';
   try {
     const res = await fetch(
-      `${green_api_url}/waInstance${green_api_instance_id}/sendMessage/${green_api_token}`,
-      {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ chatId, message }),
-      }
+      agentCreds.green_api_url + '/waInstance' + agentCreds.green_api_instance_id + '/sendMessage/' + agentCreds.green_api_token,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chatId, message }) }
     );
     if (!res.ok) {
       const body = await res.text();
-      console.error(`[webhook/send] Green API error: ${body.slice(0, 200)}`);
+      console.error('[webhook/send] Green API error: ' + body.slice(0, 200));
       return false;
     }
     return true;
@@ -62,28 +50,211 @@ async function sendViaGreenApi(agentCreds, toNumber, message) {
   }
 }
 
-// ── Gemini personalised reply generator ──────────────────────────────────────
-
 async function generateReply(originalMessage, leadReply, agentFirstName, geminiKey) {
   try {
     const controller = new AbortController();
-    const timeoutId  = setTimeout(() => controller.abort(), GEMINI_TIMEOUT_MS);
+    const timeoutId  = setTimeout(function() { controller.abort(); }, GEMINI_TIMEOUT_MS);
+    const prompt = 'You are ' + agentFirstName + ', a real estate agent at EVA Real Estate in Dubai.\n\n' +
+      'You sent this WhatsApp outreach message to a property owner:\n"""\n' + originalMessage + '\n"""\n\n' +
+      'The property owner replied:\n"""\n' + leadReply + '\n"""\n\n' +
+      'Write a short (2-4 sentence), warm, natural follow-up reply that:\n' +
+      '- Acknowledges specifically what they said\n' +
+      '- Moves the conversation forward (suggest a quick call or ask one relevant question)\n' +
+      '- Sounds like a real person, not a bot -- conversational, not formal\n' +
+      '- Does NOT use hollow phrases like "Great to hear from you!" or "I hope this finds you well"\n\n' +
+      'Return only the reply text, no commentary.';
+    const res = await fetch(
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' + geminiKey,
+      { method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 1.0 } }) }
+    );
+    clearTimeout(timeoutId);
+    if (!res.ok) { console.warn('[webhook/Gemini] HTTP ' + res.status); return null; }
+    const data = await res.json();
+    const txt = data && data.candidates && data.candidates[0] && data.candidates[0].content &&
+                data.candidates[0].content.parts && data.candidates[0].content.parts[0] &&
+                data.candidates[0].content.parts[0].text;
+    return txt ? txt.trim() : null;
+  } catch (e) {
+    console.warn('[webhook/Gemini] Error:', e.message);
+    return null;
+  }
+}
 
-    const prompt =
-`You are ${agentFirstName}, a real estate agent at EVA Real Estate in Dubai.
+const STOP_PATTERNS = [/\bstop\b/i, /\bunsubscribe\b/i, /\bremove\b/i, /\bopt.?out\b/i,
+                       /\bnot interested\b/i, /\bno thanks\b/i, /\bno thank you\b/i];
+const RENT_PATTERNS = [/\brent\b/i, /^1$/];
+const SELL_PATTERNS = [/\bsell\b/i, /\bsale\b/i, /^2$/];
 
-You sent this WhatsApp outreach message to a property owner:
-"""
-${originalMessage}
-"""
+function detectIntent(text) {
+  const t = (text || '').trim();
+  if (STOP_PATTERNS.some(function(r) { return r.test(t); })) return 'stop';
+  if (RENT_PATTERNS.some(function(r) { return r.test(t); })) return 'rent';
+  if (SELL_PATTERNS.some(function(r) { return r.test(t); })) return 'sell';
+  return 'conversation';
+}
 
-The property owner replied:
-"""
-${leadReply}
-"""
+function parsePollVote(payload, fromNumber) {
+  var pollData = payload && payload.messageData && payload.messageData.pollMessageData
+    ? payload.messageData.pollMessageData : null;
+  if (!pollData) return null;
+  var voterChatId = fromNumber + '@c.us';
+  var votes = pollData.votes || [];
+  for (var i = 0; i < votes.length; i++) {
+    var voters = votes[i].optionVoters || [];
+    for (var j = 0; j < voters.length; j++) {
+      if (voters[j] === voterChatId || voters[j].replace('@c.us', '') === fromNumber)
+        return (votes[i].optionName || '').toLowerCase();
+    }
+  }
+  return null;
+}
 
-Write a short (2–4 sentence), warm, natural follow-up reply that:
-- Acknowledges specifically what they said
-- Moves the conversation forward (suggest a quick call or ask one relevant question)
-- Sounds like a real person, not a bot — conversational, not formal
-- Does NOT use hollow phrases like "Great to hear from you!" or "I hope this finds yo
+async function handlePollVote(payload, fromNumber, contact) {
+  var votedOption = parsePollVote(payload, fromNumber);
+  if (!votedOption) return;
+  console.log('[webhook/poll] ' + fromNumber + ' voted: "' + votedOption + '"');
+  var now = new Date().toISOString();
+  var newReplyCount = ((contact.reply_count) || 0) + 1;
+  var newStatus;
+  if (votedOption.includes('rent'))                                                        newStatus = 'interested_rent';
+  else if (votedOption.includes('sell'))                                                   newStatus = 'interested_sell';
+  else if (votedOption.includes('market') || votedOption.includes('data') || votedOption.includes('report')) newStatus = 'wants_report';
+  else                                                                                     newStatus = 'opted_out';
+
+  await supabaseFetch('/owner_contacts?id=eq.' + contact.id, {
+    method: 'PATCH', headers: { 'Prefer': 'return=minimal' },
+    body: JSON.stringify({ message_status: newStatus, reply_count: newReplyCount, replied_at: now })
+  });
+
+  var agentRes = await supabaseFetch('/profiles?id=eq.' + contact.assigned_agent +
+    '&select=first_name,green_api_url,green_api_instance_id,green_api_token');
+  var agentRows = await agentRes.json();
+  var agentProfile = agentRows[0];
+  if (!agentProfile || !agentProfile.green_api_instance_id) return;
+
+  if (newStatus === 'opted_out') {
+    await sendViaGreenApi(agentProfile, fromNumber,
+      'No problem at all -- you have been removed and will not hear from us again. Have a great day!');
+    console.log('[webhook/poll] ' + fromNumber + ' opted out via poll');
+    return;
+  }
+
+  if (newStatus === 'wants_report') {
+    var building = encodeURIComponent(contact.building_name || '');
+    var reportRes = await supabaseFetch(
+      '/market_reports?community_name=ilike.*' + building + '*&order=created_at.desc&limit=1&select=report_url,file_url,community_name'
+    ).catch(function() { return null; });
+    var reports = reportRes ? await reportRes.json() : [];
+    var latestReport = Array.isArray(reports) && reports.length > 0 ? reports[0] : null;
+    var reportLink = latestReport && (latestReport.report_url || latestReport.file_url);
+    if (reportLink) {
+      await sendViaGreenApi(agentProfile, fromNumber,
+        'Here is the latest market report for ' + latestReport.community_name +
+        ' -- it covers recent transaction data, price trends, and rental yields:\n\n' +
+        reportLink + '\n\nHappy to walk you through it or answer any questions!');
+      console.log('[webhook/poll] Market report sent to ' + fromNumber);
+    } else {
+      await sendViaGreenApi(agentProfile, fromNumber,
+        'I will put together a detailed market report for your building and send it to you shortly. Watch this space!');
+      console.log('[webhook/poll] No report found for building "' + contact.building_name + '"');
+    }
+    return;
+  }
+
+  var settingsRes = await supabaseFetch('/api_settings?id=eq.1&select=gemini_api_key');
+  var settingsRows = await settingsRes.json();
+  var geminiKey = settingsRows[0] && settingsRows[0].gemini_api_key ? settingsRows[0].gemini_api_key : '';
+  var intent = newStatus === 'interested_rent' ? 'rent' : 'sell';
+  var votedLabel = intent === 'rent' ? 'rent it out' : 'sell it';
+  var replyText = geminiKey
+    ? await generateReply(contact.generated_message, 'I want to ' + votedLabel, agentProfile.first_name, geminiKey)
+    : null;
+  var fallback = intent === 'rent'
+    ? 'Thanks for letting me know! I would love to help you get it rented. When would be a good time for a quick 5-minute call?'
+    : 'The market is strong right now. Can we jump on a quick call this week? I can walk you through what your unit could realistically achieve.';
+  await sendViaGreenApi(agentProfile, fromNumber, replyText || fallback);
+  console.log('[webhook/poll] Sent ' + intent + ' follow-up to ' + fromNumber);
+}
+
+async function handleTextReply(fromNumber, messageText, contact) {
+  var intent = detectIntent(messageText);
+  var now = new Date().toISOString();
+  var newReplyCount = ((contact.reply_count) || 0) + 1;
+  console.log('[webhook/text] ' + fromNumber + ' replied -- intent: ' + intent);
+  var newStatus;
+  if (intent === 'stop') newStatus = 'opted_out';
+  else if (intent === 'rent') newStatus = 'interested_rent';
+  else if (intent === 'sell') newStatus = 'interested_sell';
+  else newStatus = 'replied';
+
+  await supabaseFetch('/owner_contacts?id=eq.' + contact.id, {
+    method: 'PATCH', headers: { 'Prefer': 'return=minimal' },
+    body: JSON.stringify({ message_status: newStatus, reply_count: newReplyCount, replied_at: now })
+  });
+
+  var agentRes = await supabaseFetch('/profiles?id=eq.' + contact.assigned_agent +
+    '&select=first_name,green_api_url,green_api_instance_id,green_api_token');
+  var agentRows = await agentRes.json();
+  var agentProfile = agentRows[0];
+  if (!agentProfile || !agentProfile.green_api_instance_id) return;
+
+  if (intent === 'stop') {
+    await sendViaGreenApi(agentProfile, fromNumber,
+      'No problem -- you have been removed from our list and will not hear from us again. Have a great day!');
+    return;
+  }
+
+  var settingsRes = await supabaseFetch('/api_settings?id=eq.1&select=gemini_api_key');
+  var settingsRows = await settingsRes.json();
+  var geminiKey = settingsRows[0] && settingsRows[0].gemini_api_key ? settingsRows[0].gemini_api_key : '';
+  if (!geminiKey) return;
+
+  var replyText = await generateReply(contact.generated_message, messageText, agentProfile.first_name, geminiKey);
+  if (replyText) {
+    await sendViaGreenApi(agentProfile, fromNumber, replyText);
+    console.log('[webhook/text] Gemini reply sent to ' + fromNumber + ' (intent: ' + intent + ')');
+  }
+}
+
+router.post('/incoming', async function(req, res) {
+  res.sendStatus(200);
+  try {
+    var payload = req.body;
+    if (payload.typeWebhook !== 'incomingMessageReceived') return;
+    var rawSender  = (payload.senderData && (payload.senderData.sender || payload.senderData.chatId)) || '';
+    var fromNumber = rawSender.replace('@c.us', '').replace(/\D/g, '');
+    if (!fromNumber) return;
+    var msgType    = (payload.messageData && payload.messageData.typeMessage) || '';
+    var isPollVote = msgType === 'pollUpdateMessage';
+    var messageText = (
+      (payload.messageData && payload.messageData.textMessageData && payload.messageData.textMessageData.textMessage) ||
+      (payload.messageData && payload.messageData.extendedTextMessageData && payload.messageData.extendedTextMessageData.text) ||
+      ''
+    ).trim();
+    var lookupRes = await supabaseFetch(
+      '/owner_contacts?number_1=eq.' + encodeURIComponent(fromNumber) +
+      '&message_status=in.(sent,replied,interested_rent,interested_sell)&order=sent_at.desc&limit=1' +
+      '&select=id,reply_count,generated_message,assigned_agent,building_name'
+    );
+    var contacts = await lookupRes.json();
+    var contact  = Array.isArray(contacts) && contacts.length > 0 ? contacts[0] : null;
+    await supabaseFetch('/incoming_messages', {
+      method: 'POST',
+      body: JSON.stringify({
+        contact_id:   contact ? contact.id : null,
+        from_number:  fromNumber,
+        message_text: isPollVote ? '[POLL VOTE] ' + msgType : messageText,
+        raw_payload:  payload,
+        matched:      !!contact,
+      }),
+    }).catch(function(e) { console.error('[webhook] Log error:', e.message); });
+    if (!contact) return;
+    if (isPollVote) await handlePollVote(payload, fromNumber, contact);
+    else if (messageText) await handleTextReply(fromNumber, messageText, contact);
+  } catch (err) {
+    console.error('[webhook] Unhandled error:', err.message);
+  }
+});
+
+module.exports = router;
