@@ -5,23 +5,8 @@ const TEST_MODE = false;
 
 const FETCH_TIMEOUT_MS = 10000;
 
-// ── Daily send cap ────────────────────────────────────────────────────────────
-// 25/day is meaningfully safer than 50 for account longevity.
-// WhatsApp risk systems weigh outbound-only volume heavily.
-// Accounts under ~3 months old should be treated as "warming" and will
-// automatically get a lower cap (see getEffectiveDailyCap below).
 const DEFAULT_DAILY_CAP = 25;
 
-// ── Timing strategy ───────────────────────────────────────────────────────────
-// Rather than a single fixed gap range we model three behaviour patterns
-// a human salesperson would exhibit across the day:
-//
-//   "focused"  (40%): back-to-back outreach session → 4–10 min gaps
-//   "normal"   (45%): working but distracted        → 10–22 min gaps
-//   "drifted"  (15%): meeting / coffee / call       → 28–55 min gaps
-//
-// Between 13:00–14:00 UAE (lunch) the scheduler picks "drifted" 65% of
-// the time, mimicking a natural lunch break.
 function randomGapSeconds(uaeHour) {
   const isLunch = uaeHour === 13;
   const roll = Math.random();
@@ -34,22 +19,13 @@ function randomGapSeconds(uaeHour) {
   }
 
   switch (bucket) {
-    case 'focused': return 240  + Math.floor(Math.random() * 360);   // 4–10 min
-    case 'normal':  return 600  + Math.floor(Math.random() * 720);   // 10–22 min
-    case 'drifted': return 1680 + Math.floor(Math.random() * 1620);  // 28–55 min
+    case 'focused': return 240  + Math.floor(Math.random() * 360);
+    case 'normal':  return 600  + Math.floor(Math.random() * 720);
+    case 'drifted': return 1680 + Math.floor(Math.random() * 1620);
     default:        return 600;
   }
 }
 
-// ── Account warmup cap ────────────────────────────────────────────────────────
-// New Green API instances ramp up gradually:
-//   Week 1  (days  1–7):  15/day
-//   Week 2  (days  8–14): 18/day
-//   Week 3  (days 15–21): 21/day
-//   Week 4  (days 22–30): 23/day
-//   30+ days:             DEFAULT_DAILY_CAP (25)
-//
-// account_created_at is read from the profile. If absent we use DEFAULT_DAILY_CAP.
 function getEffectiveDailyCap(accountCreatedAt) {
   if (!accountCreatedAt) return DEFAULT_DAILY_CAP;
   const ageMs = Date.now() - new Date(accountCreatedAt).getTime();
@@ -60,8 +36,6 @@ function getEffectiveDailyCap(accountCreatedAt) {
   if (ageDays < 30) return 23;
   return DEFAULT_DAILY_CAP;
 }
-
-// ── Phone normalisation ───────────────────────────────────────────────────────
 
 function normalizePhone(num) {
   return String(num || '').replace(/\D/g, '');
@@ -91,14 +65,9 @@ function phoneVariants(num) {
   return Array.from(variants);
 }
 
-// ── Supabase fetch wrapper ────────────────────────────────────────────────────
-
 async function supabaseFetch(path, options = {}) {
   const baseUrl = process.env.SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_KEY;
-
-  if (!baseUrl) throw new Error('SUPABASE_URL is not set in Railway variables');
-  if (!serviceKey) throw new Error('SUPABASE_SERVICE_KEY is not set in Railway variables');
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
@@ -124,8 +93,6 @@ async function supabaseFetch(path, options = {}) {
   }
 }
 
-// ── Main tick ─────────────────────────────────────────────────────────────────
-
 async function tick() {
   if (!TEST_MODE) {
     const uaeTime = new Date().toLocaleString('en-US', { timeZone: 'Asia/Dubai' });
@@ -142,22 +109,16 @@ async function tick() {
   const agents = await agentsRes.json();
   if (!Array.isArray(agents)) return;
 
-  // Process all agents in parallel
   await Promise.all(
-    agents.map(agent =>
-      processAgent(agent.id).catch(e =>
-        console.error(`Scheduler error for agent ${agent.id}:`, e.message)
-      )
-    )
+    agents.map(function(agent) {
+      return processAgent(agent.id).catch(function(e) {
+        console.error(`Scheduler error for agent ${agent.id}:`, e.message);
+      });
+    })
   );
 }
 
-// ── Per-agent processing ──────────────────────────────────────────────────────
-
 async function processAgent(agentId) {
-  // Reset contacts stuck in 'processing' for > 10 min (crash recovery)
-  // Extended to 10 min to account for the typing simulation delay (up to 18s)
-  // plus any retries, so we don't re-queue a message that's mid-send.
   const stuckCutoff = new Date(Date.now() - 10 * 60 * 1000).toISOString();
   await supabaseFetch(
     `/owner_contacts?assigned_agent=eq.${agentId}&message_status=eq.processing&created_at=lt.${stuckCutoff}`,
@@ -166,11 +127,10 @@ async function processAgent(agentId) {
       headers: { 'Prefer': 'return=minimal' },
       body: JSON.stringify({ message_status: 'pending' })
     }
-  ).catch(e => console.error(`Failed to reset stuck contacts for agent ${agentId}:`, e.message));
+  ).catch(function(e) { console.error(`Failed to reset stuck contacts for agent ${agentId}:`, e.message); });
 
   const todayUAE = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Dubai' });
 
-  // Fetch profile for pause flag + account creation date (for warmup cap)
   const profileRes = await supabaseFetch(
     `/profiles?id=eq.${agentId}&select=sending_paused,created_at`
   );
@@ -183,10 +143,8 @@ async function processAgent(agentId) {
     return;
   }
 
-  // Effective daily cap — respects account warmup schedule
   const dailyCap = getEffectiveDailyCap(profile.created_at);
 
-  // Check daily send count
   const countRes = await supabaseFetch(
     `/messages_log?agent_id=eq.${agentId}&sent_at=gte.${todayUAE}T00:00:00%2B04:00&select=id`,
     { headers: { 'Prefer': 'count=exact' } }
@@ -198,7 +156,6 @@ async function processAgent(agentId) {
     return;
   }
 
-  // Enforce minimum time gap since last send
   if (!TEST_MODE) {
     const lastRes = await supabaseFetch(
       `/messages_log?agent_id=eq.${agentId}&order=sent_at.desc&limit=1&select=sent_at`
@@ -206,22 +163,141 @@ async function processAgent(agentId) {
     const lastLogs = await lastRes.json();
     if (lastLogs.length > 0) {
       const secondsSinceLast = (Date.now() - new Date(lastLogs[0].sent_at).getTime()) / 1000;
-
-      // Get current UAE hour for lunch-aware gap selection
       const uaeTime = new Date().toLocaleString('en-US', { timeZone: 'Asia/Dubai' });
       const uaeHour = new Date(uaeTime).getHours();
       const requiredGap = randomGapSeconds(uaeHour);
 
       if (secondsSinceLast < requiredGap) {
         const remainMin = Math.round((requiredGap - secondsSinceLast) / 60);
-        console.log(`Agent ${agentId}: ${Math.round(secondsSinceLast / 60)}m since last send, need ${Math.round(requiredGap / 60)}m — waiting ~${remainMin}m`);
+        console.log(`Agent ${agentId}: ${Math.round(secondsSinceLast / 60)}m since last send, need ${Math.round(requiredGap / 60)}m -- waiting ~${remainMin}m`);
         return;
       }
     }
   }
 
-  // Get next pending contact
   const contactRes = await supabaseFetch(
     `/owner_contacts?assigned_agent=eq.${agentId}&message_status=eq.pending&order=created_at.asc&limit=1`
   );
-  const contacts = await contactRe
+  const contacts = await contactRes.json();
+  if (!contacts.length) return;
+
+  const contact = contacts[0];
+
+  await supabaseFetch(`/owner_contacts?id=eq.${contact.id}`, {
+    method: 'PATCH',
+    headers: { 'Prefer': 'return=minimal' },
+    body: JSON.stringify({ message_status: 'processing' })
+  });
+
+  const variants = phoneVariants(contact.number_1);
+  const orLog     = variants.map(function(v) { return `number_used.eq.${encodeURIComponent(v)}`; }).join(',');
+  const orContact = variants.map(function(v) { return `number_1.eq.${encodeURIComponent(v)}`; }).join(',');
+
+  const results = await Promise.all([
+    supabaseFetch(`/messages_log?or=(${orLog})&limit=1&select=id`),
+    supabaseFetch(
+      `/owner_contacts?or=(${orContact})&message_status=in.(sent,processing,duplicate,replied,interested_rent,interested_sell)&id=neq.${contact.id}&limit=1&select=id`
+    ),
+    supabaseFetch(
+      `/owner_contacts?or=(${orContact})&message_status=eq.opted_out&limit=1&select=id`
+    ),
+  ]);
+
+  const dupLogs     = await results[0].json();
+  const dupContacts = await results[1].json();
+  const optedOut    = await results[2].json();
+
+  if (optedOut.length > 0) {
+    console.log(`Opted-out number ${contact.number_1} -- permanently suppressing contact ${contact.id}`);
+    await supabaseFetch(`/owner_contacts?id=eq.${contact.id}`, {
+      method: 'PATCH',
+      headers: { 'Prefer': 'return=minimal' },
+      body: JSON.stringify({ message_status: 'opted_out' })
+    });
+    return;
+  }
+
+  if (dupLogs.length > 0 || dupContacts.length > 0) {
+    const source = dupLogs.length > 0 ? 'messages_log' : 'owner_contacts';
+    console.log(`Duplicate ${contact.number_1} in ${source} -- skipping ${contact.id}`);
+    await supabaseFetch(`/owner_contacts?id=eq.${contact.id}`, {
+      method: 'PATCH',
+      headers: { 'Prefer': 'return=minimal' },
+      body: JSON.stringify({ message_status: 'duplicate' })
+    });
+    return;
+  }
+
+  try {
+    const sendResult = await sessionManager.sendMessage(agentId, contact.number_1, contact.generated_message);
+
+    const batchRes  = await supabaseFetch(`/batches?id=eq.${contact.uploaded_batch_id}&select=send_poll`);
+    const batchRows = await batchRes.json();
+    const batchRow  = batchRows[0];
+    const shouldSendPoll = batchRow ? batchRow.send_poll !== false : true;
+
+    if (shouldSendPoll) {
+      const pollDelay = 4000 + Math.floor(Math.random() * 5000);
+      await new Promise(function(r) { setTimeout(r, pollDelay); });
+
+      await sessionManager.sendPoll(
+        agentId,
+        contact.number_1,
+        'Quick question -- what would you like to do with your property?',
+        ['Rent it out', 'Sell it', 'Send me market data', 'Remove me from this list'],
+        sendResult ? sendResult.messageId : null
+      ).catch(function(e) { console.warn(`[poll] Failed for ${contact.number_1}:`, e.message); });
+    }
+
+    const now = new Date().toISOString();
+
+    await supabaseFetch(`/owner_contacts?id=eq.${contact.id}`, {
+      method: 'PATCH',
+      headers: { 'Prefer': 'return=minimal' },
+      body: JSON.stringify({ message_status: 'sent', sent_at: now })
+    });
+
+    await supabaseFetch('/messages_log', {
+      method: 'POST',
+      headers: { 'Prefer': 'return=minimal' },
+      body: JSON.stringify({
+        contact_id:       contact.id,
+        agent_id:         agentId,
+        number_used:      contact.number_1,
+        message_text:     contact.generated_message,
+        delivery_status:  'sent',
+        sent_at:          now
+      })
+    });
+
+    await supabaseFetch('/rpc/increment_batch_sent', {
+      method: 'POST',
+      body: JSON.stringify({ batch_id: contact.uploaded_batch_id })
+    });
+
+    console.log(`${TEST_MODE ? '[TEST] ' : ''}Sent to ${contact.number_1} for agent ${agentId} (${sentToday + 1}/${dailyCap} today)`);
+  } catch (err) {
+    console.error(`Send failed for contact ${contact.id}:`, err.message);
+    await supabaseFetch(`/owner_contacts?id=eq.${contact.id}`, {
+      method: 'PATCH',
+      headers: { 'Prefer': 'return=minimal' },
+      body: JSON.stringify({ message_status: 'failed' })
+    }).catch(function(e) { console.error('Failed to mark contact as failed:', e.message); });
+  }
+}
+
+function startScheduler() {
+  if (TEST_MODE) {
+    console.log('Scheduler: TEST MODE -- no time restrictions or gaps');
+  } else {
+    console.log(
+      'Scheduler: PRODUCTION MODE\n' +
+      '  Hours:    09:00-21:00 UAE\n' +
+      '  Daily cap: ' + DEFAULT_DAILY_CAP + ' (new accounts ramp up over 30 days)\n' +
+      '  Gaps:     4-10 min (focused) | 10-22 min (normal) | 28-55 min (drifted) | lunch-aware'
+    );
+  }
+  setInterval(tick, 60000);
+}
+
+module.exports = { startScheduler, tick };
