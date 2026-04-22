@@ -140,36 +140,22 @@ function getQR(agentId) {
   return null;
 }
 
-// ── Typing simulation helpers ─────────────────────────────────────────────────
+// Typing simulation helpers
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-/**
- * Calculate a realistic typing delay based on message length.
- * A human typing at ~45 WPM on a phone would take:
- *   short msg  (<100 chars)  → 3–6 s
- *   medium msg (100–300 chars) → 6–12 s
- *   long msg   (300+ chars)  → 10–18 s
- * We add ±20% random jitter on top.
- */
 function typingDurationMs(message) {
   const len = (message || '').length;
   let base;
-  if (len < 100)       base = 3000 + Math.random() * 3000;   // 3–6 s
-  else if (len < 300)  base = 6000 + Math.random() * 6000;   // 6–12 s
-  else                 base = 10000 + Math.random() * 8000;  // 10–18 s
-  // ±20% jitter
+  if (len < 100)       base = 3000 + Math.random() * 3000;
+  else if (len < 300)  base = 6000 + Math.random() * 6000;
+  else                 base = 10000 + Math.random() * 8000;
   const jitter = base * 0.2 * (Math.random() - 0.5);
   return Math.round(base + jitter);
 }
 
-/**
- * Send the "typing…" chat action to Green API.
- * This shows the typing indicator in the recipient's chat.
- * Errors are silently ignored — it's cosmetic, not critical.
- */
 async function sendTypingAction(creds, chatId) {
   try {
     await fetch(
@@ -181,9 +167,98 @@ async function sendTypingAction(creds, chatId) {
       }
     );
   } catch (e) {
-    // Non-critical — don't let a typing indicator failure block the send
     console.warn(`[typing] sendChatAction failed for ${chatId}:`, e.message);
   }
 }
 
-async func
+async function sendMessage(agentId, number, message) {
+  let creds = clients.get(agentId);
+  if (!creds) {
+    const profile = await getAgentCredentials(agentId);
+    if (!profile) throw new Error('No Green API instance configured for this agent');
+    creds = { idInstance: profile.green_api_instance_id, apiTokenInstance: profile.green_api_token, apiUrl: profile.green_api_url };
+    clients.set(agentId, creds);
+  }
+
+  const cleanNumber = number.replace(/\D/g, '');
+  const chatId = `${cleanNumber}@c.us`;
+
+  await sendTypingAction(creds, chatId);
+
+  const typingMs = typingDurationMs(message);
+  console.log(`[typing] Simulating ${Math.round(typingMs / 1000)}s typing for ${number}`);
+  await sleep(typingMs);
+
+  const res = await fetch(`${creds.apiUrl}/waInstance${creds.idInstance}/sendMessage/${creds.apiTokenInstance}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chatId, message })
+  });
+
+  const data = await res.json();
+  if (!res.ok) throw new Error(`Green API send error: ${JSON.stringify(data)}`);
+
+  console.log(`Sent to ${number} for agent ${agentId} via Green API`);
+  return { messageId: data.idMessage, timestamp: new Date().toISOString() };
+}
+
+async function sendPoll(agentId, number, question, options, quotedMessageId) {
+  let creds = clients.get(agentId);
+  if (!creds) {
+    const profile = await getAgentCredentials(agentId);
+    if (!profile) throw new Error('No Green API instance configured for this agent');
+    creds = { idInstance: profile.green_api_instance_id, apiTokenInstance: profile.green_api_token, apiUrl: profile.green_api_url };
+    clients.set(agentId, creds);
+  }
+
+  const cleanNumber = number.replace(/\D/g, '');
+  const chatId      = `${cleanNumber}@c.us`;
+
+  const typingMs = 2000 + Math.floor(Math.random() * 3000);
+
+  const body = {
+    chatId,
+    message:         question,
+    options:         options.map(function(o) { return { optionName: o }; }),
+    multipleAnswers: false,
+    typingTime:      typingMs,
+  };
+
+  if (quotedMessageId) {
+    body.quotedMessageId = quotedMessageId;
+  }
+
+  const res = await fetch(
+    `${creds.apiUrl}/waInstance${creds.idInstance}/sendPoll/${creds.apiTokenInstance}`,
+    {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(body),
+    }
+  );
+
+  const data = await res.json();
+  if (!res.ok) throw new Error(`Green API sendPoll error: ${JSON.stringify(data)}`);
+
+  console.log(`Poll sent to ${number} for agent ${agentId}`);
+  return { messageId: data.idMessage, timestamp: new Date().toISOString() };
+}
+
+async function disconnectSession(agentId) {
+  const creds = clients.get(agentId);
+  if (creds) {
+    try {
+      await fetch(`${creds.apiUrl}/waInstance${creds.idInstance}/logout/${creds.apiTokenInstance}`);
+      console.log(`Agent ${agentId} logged out from Green API`);
+    } catch(e) {}
+  }
+  clients.delete(agentId);
+  statuses.set(agentId, 'disconnected');
+  await updateSupabaseStatus(agentId, 'disconnected');
+}
+
+async function restoreAllSessions() {
+  console.log('Green API sessions are managed on Green API servers -- no local restore needed');
+}
+
+module.exports = { createSession, getStatus, getQR, sendMessage, sendPoll, disconnectSession, restoreAllSessions };
