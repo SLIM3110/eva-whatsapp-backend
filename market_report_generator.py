@@ -1047,5 +1047,5 @@ def generate_report(output_path, data, txn_csvs=None, rental_csvs=None):
         story += page_market_outlook(data)
     story += [Spacer(1, 1)]
     doc.build(story)
-    print(f'Report generated: {output_path}')
+    import sys; sys.stderr.write(f'Report generated: {output_path}\n')
     return output_path
