@@ -4,6 +4,19 @@ const statuses = new Map();
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://guwmfmwyqrwvufchkzfc.supabase.co';
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
 
+// Safe JSON parse — returns null if body is empty or invalid
+async function safeJson(res) {
+  try {
+    const text = await res.text();
+    if (!text || !text.trim()) return null;
+    return JSON.parse(text);
+  } catch (e) {
+    return null;
+  }
+}
+
+
+
 async function supabaseRequest(path, options = {}) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1${path}`, {
     ...options,
@@ -68,7 +81,8 @@ async function createSession(agentId) {
   clients.set(agentId, { idInstance: green_api_instance_id, apiTokenInstance: green_api_token, apiUrl: green_api_url });
 
   const stateRes = await fetch(`${green_api_url}/waInstance${green_api_instance_id}/getStateInstance/${green_api_token}`);
-  const stateData = await stateRes.json();
+  const stateData = await safeJson(stateRes);
+  if (!stateData) { statuses.set(agentId, 'pending'); return { qrCode: null, status: 'pending' }; }
 
   if (stateData.stateInstance === 'authorized') {
     statuses.set(agentId, 'connected');
@@ -78,18 +92,18 @@ async function createSession(agentId) {
   }
 
   const qrRes = await fetch(`${green_api_url}/waInstance${green_api_instance_id}/qr/${green_api_token}`);
-  const qrData = await qrRes.json();
+  const qrData = await safeJson(qrRes);
 
-  if (qrData.type === 'alreadyLogged') {
+  if (qrData && qrData.type === 'alreadyLogged') {
     statuses.set(agentId, 'connected');
     await updateSupabaseStatus(agentId, 'connected');
     await registerWebhook(green_api_url, green_api_instance_id, green_api_token);
     return { status: 'already_connected' };
   }
 
-  if (qrData.type === 'qrCode') {
+  if (qrData && qrData.type === 'qrCode') {
     statuses.set(agentId, 'pending');
-    return { qrCode: `data:image/png;base64,${qrData.message}`, status: 'pending' };
+    return { qrCode: 'data:image/png;base64,' + qrData.message, status: 'pending' };
   }
 
   return { qrCode: null, status: 'pending' };
@@ -105,8 +119,9 @@ async function getStatus(agentId) {
   }
 
   try {
-    const res = await fetch(`${creds.apiUrl}/waInstance${creds.idInstance}/getStateInstance/${creds.apiTokenInstance}`);
-    const data = await res.json();
+    const res = await fetch(creds.apiUrl + '/waInstance' + creds.idInstance + '/getStateInstance/' + creds.apiTokenInstance);
+    const data = await safeJson(res);
+    if (!data) return { status: statuses.get(agentId) || 'disconnected', qrCode: null };
 
     if (data.stateInstance === 'authorized') {
       const wasConnected = statuses.get(agentId) === 'connected';
@@ -119,11 +134,11 @@ async function getStatus(agentId) {
     }
 
     if (data.stateInstance === 'notAuthorized') {
-      const qrRes = await fetch(`${creds.apiUrl}/waInstance${creds.idInstance}/qr/${creds.apiTokenInstance}`);
-      const qrData = await qrRes.json();
-      if (qrData.type === 'qrCode') {
+      const qrRes = await fetch(creds.apiUrl + '/waInstance' + creds.idInstance + '/qr/' + creds.apiTokenInstance);
+      const qrData = await safeJson(qrRes);
+      if (qrData && qrData.type === 'qrCode') {
         statuses.set(agentId, 'pending');
-        return { status: 'pending', qrCode: `data:image/png;base64,${qrData.message}` };
+        return { status: 'pending', qrCode: 'data:image/png;base64,' + qrData.message };
       }
       statuses.set(agentId, 'disconnected');
       return { status: 'disconnected', qrCode: null };
