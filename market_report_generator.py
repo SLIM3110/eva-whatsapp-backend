@@ -370,7 +370,7 @@ def _match_column(df_cols, candidates):
     return None
 
 def parse_pm_transactions(csv_path: str) -> pd.DataFrame:
-    df = pd.read_csv(csv_path, thousands=',')
+    df = pd.read_csv(csv_path, thousands=',', encoding='latin-1')
     df.columns = df.columns.str.strip()
     col_map = {}
     for field, candidates in PM_TRANSACTION_MAP.items():
@@ -394,7 +394,7 @@ def parse_pm_transactions(csv_path: str) -> pd.DataFrame:
     return df
 
 def parse_pm_rentals(csv_path: str) -> pd.DataFrame:
-    df = pd.read_csv(csv_path, thousands=',')
+    df = pd.read_csv(csv_path, thousands=',', encoding='latin-1')
     df.columns = df.columns.str.strip()
     col_map = {}
     for field, candidates in PM_RENTAL_MAP.items():
