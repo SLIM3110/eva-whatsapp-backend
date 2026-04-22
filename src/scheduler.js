@@ -231,10 +231,15 @@ async function processAgent(agentId) {
   try {
     // Send outreach message + poll in ONE call via Green API sendPoll.
     // The 'message' field is the outreach text shown above the poll options.
+    // Green API caps the poll message field at 255 chars — truncate if needed
+    const pollMsg = contact.generated_message.length > 250
+      ? contact.generated_message.slice(0, 247) + '...'
+      : contact.generated_message;
+
     const sendResult = await sessionManager.sendPoll(
       agentId,
       contact.number_1,
-      contact.generated_message,
+      pollMsg,
       ['🏠  Rent it out', '💰  Sell it', '📊  Send me market data', '❌  Remove me from this list']
     );
 
