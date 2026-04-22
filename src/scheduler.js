@@ -5,13 +5,15 @@ const TEST_MODE = false;
 
 const FETCH_TIMEOUT_MS = 10000;
 
+// ── Daily send cap ────────────────────────────────────────────────────────────
 const DEFAULT_DAILY_CAP = 25;
 
+// ── Timing strategy ───────────────────────────────────────────────────────────
 function randomGapSeconds(uaeHour) {
   const isLunch = uaeHour === 13;
   const roll = Math.random();
 
-  let bucket;
+  var bucket;
   if (isLunch) {
     bucket = roll < 0.65 ? 'drifted' : roll < 0.90 ? 'normal' : 'focused';
   } else {
@@ -19,16 +21,17 @@ function randomGapSeconds(uaeHour) {
   }
 
   switch (bucket) {
-    case 'focused': return 240  + Math.floor(Math.random() * 360);
-    case 'normal':  return 600  + Math.floor(Math.random() * 720);
-    case 'drifted': return 1680 + Math.floor(Math.random() * 1620);
+    case 'focused': return 240  + Math.floor(Math.random() * 360);   // 4-10 min
+    case 'normal':  return 600  + Math.floor(Math.random() * 720);   // 10-22 min
+    case 'drifted': return 1680 + Math.floor(Math.random() * 1620);  // 28-55 min
     default:        return 600;
   }
 }
 
+// ── Account warmup cap ────────────────────────────────────────────────────────
 function getEffectiveDailyCap(accountCreatedAt) {
   if (!accountCreatedAt) return DEFAULT_DAILY_CAP;
-  const ageMs = Date.now() - new Date(accountCreatedAt).getTime();
+  const ageMs   = Date.now() - new Date(accountCreatedAt).getTime();
   const ageDays = ageMs / (1000 * 60 * 60 * 24);
   if (ageDays <  7) return 15;
   if (ageDays < 14) return 18;
@@ -37,12 +40,14 @@ function getEffectiveDailyCap(accountCreatedAt) {
   return DEFAULT_DAILY_CAP;
 }
 
+// ── Phone normalisation ───────────────────────────────────────────────────────
+
 function normalizePhone(num) {
   return String(num || '').replace(/\D/g, '');
 }
 
 function phoneVariants(num) {
-  const digits = normalizePhone(num);
+  const digits   = normalizePhone(num);
   const variants = new Set([digits, '+' + digits]);
   if (digits.startsWith('971') && digits.length > 9) {
     const local = digits.slice(3);
@@ -65,27 +70,28 @@ function phoneVariants(num) {
   return Array.from(variants);
 }
 
-async function supabaseFetch(path, options = {}) {
-  const baseUrl = process.env.SUPABASE_URL;
+// ── Supabase fetch wrapper ────────────────────────────────────────────────────
+
+async function supabaseFetch(path, options) {
+  options = options || {};
+  const baseUrl    = process.env.SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_KEY;
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  const timer      = setTimeout(function() { controller.abort(); }, FETCH_TIMEOUT_MS);
 
   try {
-    const res = await fetch(`${baseUrl}/rest/v1${path}`, {
-      ...options,
+    const res = await fetch(baseUrl + '/rest/v1' + path, Object.assign({}, options, {
       signal: controller.signal,
-      headers: {
-        'apikey': serviceKey,
-        'Authorization': `Bearer ${serviceKey}`,
-        'Content-Type': 'application/json',
-        ...(options.headers || {})
-      }
-    });
+      headers: Object.assign({
+        'apikey':          serviceKey,
+        'Authorization':   'Bearer ' + serviceKey,
+        'Content-Type':    'application/json',
+      }, options.headers || {}),
+    }));
     if (!res.ok) {
       const body = await res.text();
-      throw new Error(`Supabase ${options.method || 'GET'} ${path} failed [${res.status}]: ${body}`);
+      throw new Error('Supabase ' + (options.method || 'GET') + ' ' + path + ' failed [' + res.status + ']: ' + body);
     }
     return res;
   } finally {
@@ -93,12 +99,14 @@ async function supabaseFetch(path, options = {}) {
   }
 }
 
+// ── Main tick ─────────────────────────────────────────────────────────────────
+
 async function tick() {
   if (!TEST_MODE) {
     const uaeTime = new Date().toLocaleString('en-US', { timeZone: 'Asia/Dubai' });
     const uaeHour = new Date(uaeTime).getHours();
     if (uaeHour < 9 || uaeHour >= 21) {
-      console.log(`Scheduler: outside UAE business hours (${uaeHour}:00), skipping`);
+      console.log('Scheduler: outside UAE business hours (' + uaeHour + ':00), skipping');
       return;
     }
   }
@@ -112,94 +120,100 @@ async function tick() {
   await Promise.all(
     agents.map(function(agent) {
       return processAgent(agent.id).catch(function(e) {
-        console.error(`Scheduler error for agent ${agent.id}:`, e.message);
+        console.error('Scheduler error for agent ' + agent.id + ':', e.message);
       });
     })
   );
 }
 
+// ── Per-agent processing ──────────────────────────────────────────────────────
+
 async function processAgent(agentId) {
+  // Reset contacts stuck in 'processing' for > 10 min (crash recovery)
   const stuckCutoff = new Date(Date.now() - 10 * 60 * 1000).toISOString();
   await supabaseFetch(
-    `/owner_contacts?assigned_agent=eq.${agentId}&message_status=eq.processing&created_at=lt.${stuckCutoff}`,
+    '/owner_contacts?assigned_agent=eq.' + agentId + '&message_status=eq.processing&created_at=lt.' + stuckCutoff,
     {
       method: 'PATCH',
       headers: { 'Prefer': 'return=minimal' },
       body: JSON.stringify({ message_status: 'pending' })
     }
-  ).catch(function(e) { console.error(`Failed to reset stuck contacts for agent ${agentId}:`, e.message); });
+  ).catch(function(e) { console.error('Failed to reset stuck contacts for agent ' + agentId + ':', e.message); });
 
   const todayUAE = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Dubai' });
 
-  const profileRes = await supabaseFetch(
-    `/profiles?id=eq.${agentId}&select=sending_paused,created_at`
-  );
-  const profiles = await profileRes.json();
+  // Fetch profile for pause flag + account creation date (for warmup cap)
+  const profileRes = await supabaseFetch('/profiles?id=eq.' + agentId + '&select=sending_paused,created_at');
+  const profiles   = await profileRes.json();
   if (!profiles.length) return;
   const profile = profiles[0];
 
   if (profile.sending_paused === true) {
-    console.log(`Agent ${agentId} has paused sending, skipping`);
+    console.log('Agent ' + agentId + ' has paused sending, skipping');
     return;
   }
 
+  // Effective daily cap -- respects account warmup schedule
   const dailyCap = getEffectiveDailyCap(profile.created_at);
 
-  const countRes = await supabaseFetch(
-    `/messages_log?agent_id=eq.${agentId}&sent_at=gte.${todayUAE}T00:00:00%2B04:00&select=id`,
+  // Check daily send count
+  const countRes  = await supabaseFetch(
+    '/messages_log?agent_id=eq.' + agentId + '&sent_at=gte.' + todayUAE + 'T00:00:00%2B04:00&select=id',
     { headers: { 'Prefer': 'count=exact' } }
   );
-  const range = countRes.headers.get('content-range');
+  const range     = countRes.headers.get('content-range');
   const sentToday = range ? parseInt(range.split('/')[1]) : 0;
   if (sentToday >= dailyCap) {
-    console.log(`Agent ${agentId} hit daily cap of ${dailyCap}`);
+    console.log('Agent ' + agentId + ' hit daily cap of ' + dailyCap);
     return;
   }
 
+  // Enforce minimum time gap since last send
   if (!TEST_MODE) {
-    const lastRes = await supabaseFetch(
-      `/messages_log?agent_id=eq.${agentId}&order=sent_at.desc&limit=1&select=sent_at`
+    const lastRes  = await supabaseFetch(
+      '/messages_log?agent_id=eq.' + agentId + '&order=sent_at.desc&limit=1&select=sent_at'
     );
     const lastLogs = await lastRes.json();
     if (lastLogs.length > 0) {
       const secondsSinceLast = (Date.now() - new Date(lastLogs[0].sent_at).getTime()) / 1000;
-      const uaeTime = new Date().toLocaleString('en-US', { timeZone: 'Asia/Dubai' });
-      const uaeHour = new Date(uaeTime).getHours();
+      const uaeTime    = new Date().toLocaleString('en-US', { timeZone: 'Asia/Dubai' });
+      const uaeHour    = new Date(uaeTime).getHours();
       const requiredGap = randomGapSeconds(uaeHour);
 
       if (secondsSinceLast < requiredGap) {
         const remainMin = Math.round((requiredGap - secondsSinceLast) / 60);
-        console.log(`Agent ${agentId}: ${Math.round(secondsSinceLast / 60)}m since last send, need ${Math.round(requiredGap / 60)}m -- waiting ~${remainMin}m`);
+        console.log('Agent ' + agentId + ': ' + Math.round(secondsSinceLast / 60) + 'm since last send, need ' + Math.round(requiredGap / 60) + 'm -- waiting ~' + remainMin + 'm');
         return;
       }
     }
   }
 
+  // Get next pending contact
   const contactRes = await supabaseFetch(
-    `/owner_contacts?assigned_agent=eq.${agentId}&message_status=eq.pending&order=created_at.asc&limit=1`
+    '/owner_contacts?assigned_agent=eq.' + agentId + '&message_status=eq.pending&order=created_at.asc&limit=1'
   );
   const contacts = await contactRes.json();
   if (!contacts.length) return;
 
   const contact = contacts[0];
 
-  await supabaseFetch(`/owner_contacts?id=eq.${contact.id}`, {
+  await supabaseFetch('/owner_contacts?id=eq.' + contact.id, {
     method: 'PATCH',
     headers: { 'Prefer': 'return=minimal' },
     body: JSON.stringify({ message_status: 'processing' })
   });
 
-  const variants = phoneVariants(contact.number_1);
-  const orLog     = variants.map(function(v) { return `number_used.eq.${encodeURIComponent(v)}`; }).join(',');
-  const orContact = variants.map(function(v) { return `number_1.eq.${encodeURIComponent(v)}`; }).join(',');
+  const variants    = phoneVariants(contact.number_1);
+  const orLog       = variants.map(function(v) { return 'number_used.eq.' + encodeURIComponent(v); }).join(',');
+  const orContact   = variants.map(function(v) { return 'number_1.eq.' + encodeURIComponent(v); }).join(',');
 
   const results = await Promise.all([
-    supabaseFetch(`/messages_log?or=(${orLog})&limit=1&select=id`),
+    supabaseFetch('/messages_log?or=(' + orLog + ')&limit=1&select=id'),
     supabaseFetch(
-      `/owner_contacts?or=(${orContact})&message_status=in.(sent,processing,duplicate,replied,interested_rent,interested_sell)&id=neq.${contact.id}&limit=1&select=id`
+      '/owner_contacts?or=(' + orContact + ')&message_status=in.(sent,processing,duplicate,replied,interested_rent,interested_sell)&id=neq.' + contact.id + '&limit=1&select=id'
     ),
     supabaseFetch(
-      `/owner_contacts?or=(${orContact})&message_status=eq.opted_out&limit=1&select=id`
+      '/owner_contacts?or=(' + orContact + ')&message_status=eq.opted_out&limit=1&select=id'
     ),
   ]);
 
@@ -208,8 +222,8 @@ async function processAgent(agentId) {
   const optedOut    = await results[2].json();
 
   if (optedOut.length > 0) {
-    console.log(`Opted-out number ${contact.number_1} -- permanently suppressing contact ${contact.id}`);
-    await supabaseFetch(`/owner_contacts?id=eq.${contact.id}`, {
+    console.log('Opted-out number ' + contact.number_1 + ' -- permanently suppressing contact ' + contact.id);
+    await supabaseFetch('/owner_contacts?id=eq.' + contact.id, {
       method: 'PATCH',
       headers: { 'Prefer': 'return=minimal' },
       body: JSON.stringify({ message_status: 'opted_out' })
@@ -219,8 +233,8 @@ async function processAgent(agentId) {
 
   if (dupLogs.length > 0 || dupContacts.length > 0) {
     const source = dupLogs.length > 0 ? 'messages_log' : 'owner_contacts';
-    console.log(`Duplicate ${contact.number_1} in ${source} -- skipping ${contact.id}`);
-    await supabaseFetch(`/owner_contacts?id=eq.${contact.id}`, {
+    console.log('Duplicate ' + contact.number_1 + ' in ' + source + ' -- skipping ' + contact.id);
+    await supabaseFetch('/owner_contacts?id=eq.' + contact.id, {
       method: 'PATCH',
       headers: { 'Prefer': 'return=minimal' },
       body: JSON.stringify({ message_status: 'duplicate' })
@@ -229,23 +243,28 @@ async function processAgent(agentId) {
   }
 
   try {
-    // Send outreach message + poll in ONE call via Green API sendPoll.
-    // The 'message' field is the outreach text shown above the poll options.
-    // Green API caps the poll message field at 255 chars — truncate if needed
-    const pollMsg = contact.generated_message.length > 250
-      ? contact.generated_message.slice(0, 247) + '...'
-      : contact.generated_message;
-
-    const sendResult = await sessionManager.sendPoll(
-      agentId,
-      contact.number_1,
-      pollMsg,
-      ['🏠  Rent it out', '💰  Sell it', '📊  Send me market data', '❌  Remove me from this list']
-    );
+    // Send the outreach message.
+    // If send_poll is true (the default), attach tap-to-reply buttons so the
+    // owner can respond with a single tap. Buttons: Rent it out / Sell it / Remove me.
+    // If send_poll is false, send the message as plain text with no buttons.
+    var sendResult;
+    if (contact.send_poll !== false) {
+      sendResult = await sessionManager.sendButtons(
+        agentId,
+        contact.number_1,
+        contact.generated_message
+      );
+    } else {
+      sendResult = await sessionManager.sendMessage(
+        agentId,
+        contact.number_1,
+        contact.generated_message
+      );
+    }
 
     const now = new Date().toISOString();
 
-    await supabaseFetch(`/owner_contacts?id=eq.${contact.id}`, {
+    await supabaseFetch('/owner_contacts?id=eq.' + contact.id, {
       method: 'PATCH',
       headers: { 'Prefer': 'return=minimal' },
       body: JSON.stringify({ message_status: 'sent', sent_at: now })
@@ -255,12 +274,12 @@ async function processAgent(agentId) {
       method: 'POST',
       headers: { 'Prefer': 'return=minimal' },
       body: JSON.stringify({
-        contact_id:       contact.id,
-        agent_id:         agentId,
-        number_used:      contact.number_1,
-        message_text:     contact.generated_message,
-        delivery_status:  'sent',
-        sent_at:          now
+        contact_id:      contact.id,
+        agent_id:        agentId,
+        number_used:     contact.number_1,
+        message_text:    contact.generated_message,
+        delivery_status: 'sent',
+        sent_at:         now
       })
     });
 
@@ -269,10 +288,10 @@ async function processAgent(agentId) {
       body: JSON.stringify({ batch_id: contact.uploaded_batch_id })
     });
 
-    console.log(`${TEST_MODE ? '[TEST] ' : ''}Sent to ${contact.number_1} for agent ${agentId} (${sentToday + 1}/${dailyCap} today)`);
+    console.log((TEST_MODE ? '[TEST] ' : '') + 'Sent to ' + contact.number_1 + ' for agent ' + agentId + ' (' + (sentToday + 1) + '/' + dailyCap + ' today)');
   } catch (err) {
-    console.error(`Send failed for contact ${contact.id}:`, err.message);
-    await supabaseFetch(`/owner_contacts?id=eq.${contact.id}`, {
+    console.error('Send failed for contact ' + contact.id + ':', err.message);
+    await supabaseFetch('/owner_contacts?id=eq.' + contact.id, {
       method: 'PATCH',
       headers: { 'Prefer': 'return=minimal' },
       body: JSON.stringify({ message_status: 'failed' })
