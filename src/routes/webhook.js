@@ -16,9 +16,9 @@ async function supabaseFetch(path, options) {
     const res = await fetch(baseUrl + '/rest/v1' + path, Object.assign({}, options, {
       signal: controller.signal,
       headers: Object.assign({
-        'apikey': serviceKey,
+        'apikey':        serviceKey,
         'Authorization': 'Bearer ' + serviceKey,
-        'Content-Type': 'application/json',
+        'Content-Type':  'application/json',
       }, options.headers || {}),
     }));
     if (!res.ok) {
@@ -36,7 +36,7 @@ async function sendViaGreenApi(agentCreds, toNumber, message) {
   try {
     const res = await fetch(
       agentCreds.green_api_url + '/waInstance' + agentCreds.green_api_instance_id + '/sendMessage/' + agentCreds.green_api_token,
-      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chatId, message }) }
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chatId: chatId, message: message }) }
     );
     if (!res.ok) {
       const body = await res.text();
@@ -71,9 +71,9 @@ async function generateReply(originalMessage, leadReply, agentFirstName, geminiK
     clearTimeout(timeoutId);
     if (!res.ok) { console.warn('[webhook/Gemini] HTTP ' + res.status); return null; }
     const data = await res.json();
-    const txt = data && data.candidates && data.candidates[0] && data.candidates[0].content &&
-                data.candidates[0].content.parts && data.candidates[0].content.parts[0] &&
-                data.candidates[0].content.parts[0].text;
+    const txt  = data && data.candidates && data.candidates[0] && data.candidates[0].content &&
+                 data.candidates[0].content.parts && data.candidates[0].content.parts[0] &&
+                 data.candidates[0].content.parts[0].text;
     return txt ? txt.trim() : null;
   } catch (e) {
     console.warn('[webhook/Gemini] Error:', e.message);
@@ -93,6 +93,74 @@ function detectIntent(text) {
   if (SELL_PATTERNS.some(function(r) { return r.test(t); })) return 'sell';
   return 'conversation';
 }
+
+// ── Button reply handler ──────────────────────────────────────────────────────
+// Handles `buttonsResponseMessage` webhook events from Green API.
+// Triggered when a recipient taps one of the reply buttons.
+
+async function handleButtonReply(payload, fromNumber, contact) {
+  var btnData = payload && payload.messageData && payload.messageData.buttonsResponseMessage
+    ? payload.messageData.buttonsResponseMessage : null;
+  if (!btnData) return;
+
+  // Green API sends selectedButtonId and selectedButtonText
+  var buttonId   = (btnData.selectedButtonId   || '').toLowerCase();
+  var buttonText = (btnData.selectedButtonText || '').toLowerCase();
+  console.log('[webhook/btn] ' + fromNumber + ' tapped: "' + buttonId + '" / "' + buttonText + '"');
+
+  var newStatus;
+  if (buttonId === 'btn_rent'   || buttonText.includes('rent')) {
+    newStatus = 'interested_rent';
+  } else if (buttonId === 'btn_sell' || buttonText.includes('sell')) {
+    newStatus = 'interested_sell';
+  } else if (buttonId === 'btn_remove' || buttonText.includes('remove')) {
+    newStatus = 'opted_out';
+  } else {
+    // Unknown button -- treat as a general reply
+    newStatus = 'replied';
+  }
+
+  var now           = new Date().toISOString();
+  var newReplyCount = ((contact.reply_count) || 0) + 1;
+
+  await supabaseFetch('/owner_contacts?id=eq.' + contact.id, {
+    method: 'PATCH', headers: { 'Prefer': 'return=minimal' },
+    body: JSON.stringify({ message_status: newStatus, reply_count: newReplyCount, replied_at: now })
+  });
+
+  var agentRes     = await supabaseFetch('/profiles?id=eq.' + contact.assigned_agent +
+    '&select=first_name,green_api_url,green_api_instance_id,green_api_token');
+  var agentRows    = await agentRes.json();
+  var agentProfile = agentRows[0];
+  if (!agentProfile || !agentProfile.green_api_instance_id) return;
+
+  if (newStatus === 'opted_out') {
+    await sendViaGreenApi(agentProfile, fromNumber,
+      'No problem at all -- you have been removed and will not hear from us again. Have a great day!');
+    console.log('[webhook/btn] ' + fromNumber + ' opted out via button');
+    return;
+  }
+
+  // Rent or sell -- generate a contextual follow-up via Gemini
+  var settingsRes  = await supabaseFetch('/api_settings?id=eq.1&select=gemini_api_key');
+  var settingsRows = await settingsRes.json();
+  var geminiKey    = settingsRows[0] && settingsRows[0].gemini_api_key ? settingsRows[0].gemini_api_key : '';
+
+  var intent     = newStatus === 'interested_rent' ? 'rent' : 'sell';
+  var votedLabel = intent === 'rent' ? 'rent it out' : 'sell it';
+  var replyText  = geminiKey
+    ? await generateReply(contact.generated_message, 'I want to ' + votedLabel, agentProfile.first_name, geminiKey)
+    : null;
+  var fallback = intent === 'rent'
+    ? 'Thanks for letting me know! I would love to help you get it rented. When would be a good time for a quick 5-minute call?'
+    : 'The market is strong right now. Can we jump on a quick call this week? I can walk you through what your unit could realistically achieve.';
+
+  await sendViaGreenApi(agentProfile, fromNumber, replyText || fallback);
+  console.log('[webhook/btn] Sent ' + intent + ' follow-up to ' + fromNumber);
+}
+
+// ── Poll vote handler (legacy -- handles votes on messages sent before the switch) ──
+// Kept for backward compatibility with any poll messages already sent.
 
 function parsePollVote(payload, fromNumber) {
   var pollData = payload && payload.messageData && payload.messageData.pollMessageData
@@ -114,22 +182,22 @@ async function handlePollVote(payload, fromNumber, contact) {
   var votedOption = parsePollVote(payload, fromNumber);
   if (!votedOption) return;
   console.log('[webhook/poll] ' + fromNumber + ' voted: "' + votedOption + '"');
-  var now = new Date().toISOString();
+  var now           = new Date().toISOString();
   var newReplyCount = ((contact.reply_count) || 0) + 1;
   var newStatus;
-  if (votedOption.includes('rent'))                                                        newStatus = 'interested_rent';
-  else if (votedOption.includes('sell'))                                                   newStatus = 'interested_sell';
+  if (votedOption.includes('rent'))                                                                       newStatus = 'interested_rent';
+  else if (votedOption.includes('sell'))                                                                  newStatus = 'interested_sell';
   else if (votedOption.includes('market') || votedOption.includes('data') || votedOption.includes('report')) newStatus = 'wants_report';
-  else                                                                                     newStatus = 'opted_out';
+  else                                                                                                    newStatus = 'opted_out';
 
   await supabaseFetch('/owner_contacts?id=eq.' + contact.id, {
     method: 'PATCH', headers: { 'Prefer': 'return=minimal' },
     body: JSON.stringify({ message_status: newStatus, reply_count: newReplyCount, replied_at: now })
   });
 
-  var agentRes = await supabaseFetch('/profiles?id=eq.' + contact.assigned_agent +
+  var agentRes     = await supabaseFetch('/profiles?id=eq.' + contact.assigned_agent +
     '&select=first_name,green_api_url,green_api_instance_id,green_api_token');
-  var agentRows = await agentRes.json();
+  var agentRows    = await agentRes.json();
   var agentProfile = agentRows[0];
   if (!agentProfile || !agentProfile.green_api_instance_id) return;
 
@@ -141,13 +209,13 @@ async function handlePollVote(payload, fromNumber, contact) {
   }
 
   if (newStatus === 'wants_report') {
-    var building = encodeURIComponent(contact.building_name || '');
+    var building  = encodeURIComponent(contact.building_name || '');
     var reportRes = await supabaseFetch(
       '/market_reports?community_name=ilike.*' + building + '*&order=created_at.desc&limit=1&select=report_url,file_url,community_name'
     ).catch(function() { return null; });
-    var reports = reportRes ? await reportRes.json() : [];
+    var reports      = reportRes ? await reportRes.json() : [];
     var latestReport = Array.isArray(reports) && reports.length > 0 ? reports[0] : null;
-    var reportLink = latestReport && (latestReport.report_url || latestReport.file_url);
+    var reportLink   = latestReport && (latestReport.report_url || latestReport.file_url);
     if (reportLink) {
       await sendViaGreenApi(agentProfile, fromNumber,
         'Here is the latest market report for ' + latestReport.community_name +
@@ -162,12 +230,12 @@ async function handlePollVote(payload, fromNumber, contact) {
     return;
   }
 
-  var settingsRes = await supabaseFetch('/api_settings?id=eq.1&select=gemini_api_key');
+  var settingsRes  = await supabaseFetch('/api_settings?id=eq.1&select=gemini_api_key');
   var settingsRows = await settingsRes.json();
-  var geminiKey = settingsRows[0] && settingsRows[0].gemini_api_key ? settingsRows[0].gemini_api_key : '';
-  var intent = newStatus === 'interested_rent' ? 'rent' : 'sell';
-  var votedLabel = intent === 'rent' ? 'rent it out' : 'sell it';
-  var replyText = geminiKey
+  var geminiKey    = settingsRows[0] && settingsRows[0].gemini_api_key ? settingsRows[0].gemini_api_key : '';
+  var intent       = newStatus === 'interested_rent' ? 'rent' : 'sell';
+  var votedLabel   = intent === 'rent' ? 'rent it out' : 'sell it';
+  var replyText    = geminiKey
     ? await generateReply(contact.generated_message, 'I want to ' + votedLabel, agentProfile.first_name, geminiKey)
     : null;
   var fallback = intent === 'rent'
@@ -177,25 +245,27 @@ async function handlePollVote(payload, fromNumber, contact) {
   console.log('[webhook/poll] Sent ' + intent + ' follow-up to ' + fromNumber);
 }
 
+// ── Text reply handler ────────────────────────────────────────────────────────
+
 async function handleTextReply(fromNumber, messageText, contact) {
-  var intent = detectIntent(messageText);
-  var now = new Date().toISOString();
+  var intent        = detectIntent(messageText);
+  var now           = new Date().toISOString();
   var newReplyCount = ((contact.reply_count) || 0) + 1;
   console.log('[webhook/text] ' + fromNumber + ' replied -- intent: ' + intent);
   var newStatus;
-  if (intent === 'stop') newStatus = 'opted_out';
+  if (intent === 'stop')  newStatus = 'opted_out';
   else if (intent === 'rent') newStatus = 'interested_rent';
   else if (intent === 'sell') newStatus = 'interested_sell';
-  else newStatus = 'replied';
+  else                        newStatus = 'replied';
 
   await supabaseFetch('/owner_contacts?id=eq.' + contact.id, {
     method: 'PATCH', headers: { 'Prefer': 'return=minimal' },
     body: JSON.stringify({ message_status: newStatus, reply_count: newReplyCount, replied_at: now })
   });
 
-  var agentRes = await supabaseFetch('/profiles?id=eq.' + contact.assigned_agent +
+  var agentRes     = await supabaseFetch('/profiles?id=eq.' + contact.assigned_agent +
     '&select=first_name,green_api_url,green_api_instance_id,green_api_token');
-  var agentRows = await agentRes.json();
+  var agentRows    = await agentRes.json();
   var agentProfile = agentRows[0];
   if (!agentProfile || !agentProfile.green_api_instance_id) return;
 
@@ -205,9 +275,9 @@ async function handleTextReply(fromNumber, messageText, contact) {
     return;
   }
 
-  var settingsRes = await supabaseFetch('/api_settings?id=eq.1&select=gemini_api_key');
+  var settingsRes  = await supabaseFetch('/api_settings?id=eq.1&select=gemini_api_key');
   var settingsRows = await settingsRes.json();
-  var geminiKey = settingsRows[0] && settingsRows[0].gemini_api_key ? settingsRows[0].gemini_api_key : '';
+  var geminiKey    = settingsRows[0] && settingsRows[0].gemini_api_key ? settingsRows[0].gemini_api_key : '';
   if (!geminiKey) return;
 
   var replyText = await generateReply(contact.generated_message, messageText, agentProfile.first_name, geminiKey);
@@ -217,21 +287,28 @@ async function handleTextReply(fromNumber, messageText, contact) {
   }
 }
 
+// ── Incoming webhook route ────────────────────────────────────────────────────
+
 router.post('/incoming', async function(req, res) {
   res.sendStatus(200);
   try {
     var payload = req.body;
     if (payload.typeWebhook !== 'incomingMessageReceived') return;
+
     var rawSender  = (payload.senderData && (payload.senderData.sender || payload.senderData.chatId)) || '';
     var fromNumber = rawSender.replace('@c.us', '').replace(/\D/g, '');
     if (!fromNumber) return;
-    var msgType    = (payload.messageData && payload.messageData.typeMessage) || '';
-    var isPollVote = msgType === 'pollUpdateMessage';
+
+    var msgType       = (payload.messageData && payload.messageData.typeMessage) || '';
+    var isPollVote    = msgType === 'pollUpdateMessage';
+    var isButtonReply = msgType === 'buttonsResponseMessage';
+
     var messageText = (
       (payload.messageData && payload.messageData.textMessageData && payload.messageData.textMessageData.textMessage) ||
       (payload.messageData && payload.messageData.extendedTextMessageData && payload.messageData.extendedTextMessageData.text) ||
       ''
     ).trim();
+
     var lookupRes = await supabaseFetch(
       '/owner_contacts?number_1=eq.' + encodeURIComponent(fromNumber) +
       '&message_status=in.(sent,replied,interested_rent,interested_sell)&order=sent_at.desc&limit=1' +
@@ -239,18 +316,22 @@ router.post('/incoming', async function(req, res) {
     );
     var contacts = await lookupRes.json();
     var contact  = Array.isArray(contacts) && contacts.length > 0 ? contacts[0] : null;
+
     await supabaseFetch('/incoming_messages', {
       method: 'POST',
       body: JSON.stringify({
         contact_id:   contact ? contact.id : null,
         from_number:  fromNumber,
-        message_text: isPollVote ? '[POLL VOTE] ' + msgType : messageText,
+        message_text: isPollVote ? '[POLL VOTE] ' + msgType : isButtonReply ? '[BUTTON REPLY] ' + msgType : messageText,
         raw_payload:  payload,
         matched:      !!contact,
       }),
     }).catch(function(e) { console.error('[webhook] Log error:', e.message); });
+
     if (!contact) return;
-    if (isPollVote) await handlePollVote(payload, fromNumber, contact);
+
+    if (isButtonReply)  await handleButtonReply(payload, fromNumber, contact);
+    else if (isPollVote) await handlePollVote(payload, fromNumber, contact);
     else if (messageText) await handleTextReply(fromNumber, messageText, contact);
   } catch (err) {
     console.error('[webhook] Unhandled error:', err.message);
