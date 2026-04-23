@@ -252,11 +252,11 @@ async function sendButtons(agentId, number, message) {
   const body = {
     chatId:   chatId,
     message:  message,
-    footer:   'Tap a button to reply, or just message back.',
+    footer:   'Tap a reply below, or just send a message.',
     buttons: [
-      { buttonId: 'btn_rent',   buttonText: 'Rent it out' },
-      { buttonId: 'btn_sell',   buttonText: 'Sell it' },
-      { buttonId: 'btn_remove', buttonText: 'Remove me' },
+      { buttonId: 'btn_rent',           buttonText: 'Rent' },
+      { buttonId: 'btn_sell',           buttonText: 'Sell' },
+      { buttonId: 'btn_not_interested', buttonText: 'Not interested' },
     ],
   };
 
