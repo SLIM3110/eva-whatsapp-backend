@@ -243,12 +243,23 @@ async function processAgent(agentId) {
   }
 
   try {
-    // Send the outreach message with tap-to-reply buttons (Rent / Sell / Not interested).
-    var sendResult = await sessionManager.sendButtons(
-      agentId,
-      contact.number_1,
-      contact.generated_message
-    );
+    // Send the outreach message.
+    // If send_poll is true (the default), attach 3 tap-to-reply buttons (Sell / Rent / Not interested).
+    // If send_poll is false, send the message as plain text with no buttons.
+    var sendResult;
+    if (contact.send_poll !== false) {
+      sendResult = await sessionManager.sendButtons(
+        agentId,
+        contact.number_1,
+        contact.generated_message
+      );
+    } else {
+      sendResult = await sessionManager.sendMessage(
+        agentId,
+        contact.number_1,
+        contact.generated_message
+      );
+    }
 
     const now = new Date().toISOString();
 
