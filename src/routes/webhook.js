@@ -113,7 +113,7 @@ async function handleButtonReply(payload, fromNumber, contact) {
     newStatus = 'interested_rent';
   } else if (buttonId === 'btn_sell' || buttonText.includes('sell')) {
     newStatus = 'interested_sell';
-  } else if (buttonId === 'btn_remove' || buttonText.includes('remove')) {
+  } else if (buttonId === 'btn_not_interested' || buttonText.includes('not interested')) {
     newStatus = 'opted_out';
   } else {
     // Unknown button -- treat as a general reply
@@ -162,90 +162,7 @@ async function handleButtonReply(payload, fromNumber, contact) {
 // ── Poll vote handler (legacy -- handles votes on messages sent before the switch) ──
 // Kept for backward compatibility with any poll messages already sent.
 
-function parsePollVote(payload, fromNumber) {
-  var pollData = payload && payload.messageData && payload.messageData.pollMessageData
-    ? payload.messageData.pollMessageData : null;
-  if (!pollData) return null;
-  var voterChatId = fromNumber + '@c.us';
-  var votes = pollData.votes || [];
-  for (var i = 0; i < votes.length; i++) {
-    var voters = votes[i].optionVoters || [];
-    for (var j = 0; j < voters.length; j++) {
-      if (voters[j] === voterChatId || voters[j].replace('@c.us', '') === fromNumber)
-        return (votes[i].optionName || '').toLowerCase();
-    }
-  }
-  return null;
-}
 
-async function handlePollVote(payload, fromNumber, contact) {
-  var votedOption = parsePollVote(payload, fromNumber);
-  if (!votedOption) return;
-  console.log('[webhook/poll] ' + fromNumber + ' voted: "' + votedOption + '"');
-  var now           = new Date().toISOString();
-  var newReplyCount = ((contact.reply_count) || 0) + 1;
-  var newStatus;
-  if (votedOption.includes('rent'))                                                                       newStatus = 'interested_rent';
-  else if (votedOption.includes('sell'))                                                                  newStatus = 'interested_sell';
-  else if (votedOption.includes('market') || votedOption.includes('data') || votedOption.includes('report')) newStatus = 'wants_report';
-  else                                                                                                    newStatus = 'opted_out';
-
-  await supabaseFetch('/owner_contacts?id=eq.' + contact.id, {
-    method: 'PATCH', headers: { 'Prefer': 'return=minimal' },
-    body: JSON.stringify({ message_status: newStatus, reply_count: newReplyCount, replied_at: now })
-  });
-
-  var agentRes     = await supabaseFetch('/profiles?id=eq.' + contact.assigned_agent +
-    '&select=first_name,green_api_url,green_api_instance_id,green_api_token');
-  var agentRows    = await agentRes.json();
-  var agentProfile = agentRows[0];
-  if (!agentProfile || !agentProfile.green_api_instance_id) return;
-
-  if (newStatus === 'opted_out') {
-    await sendViaGreenApi(agentProfile, fromNumber,
-      'No problem at all -- you have been removed and will not hear from us again. Have a great day!');
-    console.log('[webhook/poll] ' + fromNumber + ' opted out via poll');
-    return;
-  }
-
-  if (newStatus === 'wants_report') {
-    var building  = encodeURIComponent(contact.building_name || '');
-    var reportRes = await supabaseFetch(
-      '/market_reports?community_name=ilike.*' + building + '*&order=created_at.desc&limit=1&select=report_url,file_url,community_name'
-    ).catch(function() { return null; });
-    var reports      = reportRes ? await reportRes.json() : [];
-    var latestReport = Array.isArray(reports) && reports.length > 0 ? reports[0] : null;
-    var reportLink   = latestReport && (latestReport.report_url || latestReport.file_url);
-    if (reportLink) {
-      await sendViaGreenApi(agentProfile, fromNumber,
-        'Here is the latest market report for ' + latestReport.community_name +
-        ' -- it covers recent transaction data, price trends, and rental yields:\n\n' +
-        reportLink + '\n\nHappy to walk you through it or answer any questions!');
-      console.log('[webhook/poll] Market report sent to ' + fromNumber);
-    } else {
-      await sendViaGreenApi(agentProfile, fromNumber,
-        'I will put together a detailed market report for your building and send it to you shortly. Watch this space!');
-      console.log('[webhook/poll] No report found for building "' + contact.building_name + '"');
-    }
-    return;
-  }
-
-  var settingsRes  = await supabaseFetch('/api_settings?id=eq.1&select=gemini_api_key');
-  var settingsRows = await settingsRes.json();
-  var geminiKey    = settingsRows[0] && settingsRows[0].gemini_api_key ? settingsRows[0].gemini_api_key : '';
-  var intent       = newStatus === 'interested_rent' ? 'rent' : 'sell';
-  var votedLabel   = intent === 'rent' ? 'rent it out' : 'sell it';
-  var replyText    = geminiKey
-    ? await generateReply(contact.generated_message, 'I want to ' + votedLabel, agentProfile.first_name, geminiKey)
-    : null;
-  var fallback = intent === 'rent'
-    ? 'Thanks for letting me know! I would love to help you get it rented. When would be a good time for a quick 5-minute call?'
-    : 'The market is strong right now. Can we jump on a quick call this week? I can walk you through what your unit could realistically achieve.';
-  await sendViaGreenApi(agentProfile, fromNumber, replyText || fallback);
-  console.log('[webhook/poll] Sent ' + intent + ' follow-up to ' + fromNumber);
-}
-
-// ── Text reply handler ────────────────────────────────────────────────────────
 
 async function handleTextReply(fromNumber, messageText, contact) {
   var intent        = detectIntent(messageText);
@@ -300,7 +217,6 @@ router.post('/incoming', async function(req, res) {
     if (!fromNumber) return;
 
     var msgType       = (payload.messageData && payload.messageData.typeMessage) || '';
-    var isPollVote    = msgType === 'pollUpdateMessage';
     var isButtonReply = msgType === 'buttonsResponseMessage';
 
     var messageText = (
@@ -322,7 +238,7 @@ router.post('/incoming', async function(req, res) {
       body: JSON.stringify({
         contact_id:   contact ? contact.id : null,
         from_number:  fromNumber,
-        message_text: isPollVote ? '[POLL VOTE] ' + msgType : isButtonReply ? '[BUTTON REPLY] ' + msgType : messageText,
+        message_text: isButtonReply ? '[BUTTON REPLY] ' + msgType : messageText,
         raw_payload:  payload,
         matched:      !!contact,
       }),
@@ -330,8 +246,7 @@ router.post('/incoming', async function(req, res) {
 
     if (!contact) return;
 
-    if (isButtonReply)  await handleButtonReply(payload, fromNumber, contact);
-    else if (isPollVote) await handlePollVote(payload, fromNumber, contact);
+    if (isButtonReply)       await handleButtonReply(payload, fromNumber, contact);
     else if (messageText) await handleTextReply(fromNumber, messageText, contact);
   } catch (err) {
     console.error('[webhook] Unhandled error:', err.message);
