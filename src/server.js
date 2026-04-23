@@ -29,4 +29,4 @@ app.listen(PORT, async () => {
   console.log(`EVA WhatsApp Backend running on port ${PORT}`);
   await restoreAllSessions();
   startScheduler();
-}
+});
