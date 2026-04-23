@@ -247,20 +247,11 @@ async function processAgent(agentId) {
     // If send_poll is true (the default), attach tap-to-reply buttons so the
     // owner can respond with a single tap. Buttons: Rent it out / Sell it / Remove me.
     // If send_poll is false, send the message as plain text with no buttons.
-    var sendResult;
-    if (contact.send_poll !== false) {
-      sendResult = await sessionManager.sendButtons(
-        agentId,
-        contact.number_1,
-        contact.generated_message
-      );
-    } else {
-      sendResult = await sessionManager.sendMessage(
-        agentId,
-        contact.number_1,
-        contact.generated_message
-      );
-    }
+    var sendResult = await sessionManager.sendButtons(
+      agentId,
+      contact.number_1,
+      contact.generated_message
+    );
 
     const now = new Date().toISOString();
 
