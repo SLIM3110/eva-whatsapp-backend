@@ -1,4 +1,5 @@
 const sessionManager = require('./sessionManager');
+const { varyMessage } = require('./services/aiVariation');
 
 // SET THIS TO true FOR TESTING, false FOR PRODUCTION
 const TEST_MODE = false;
@@ -243,6 +244,10 @@ async function processAgent(agentId) {
   }
 
   try {
+    // AI-vary the message at send time so every outbound message has a unique
+    // fingerprint. Falls back to local variation if Gemini is unavailable.
+    const finalMessage = await varyMessage(contact.generated_message);
+
     // Send the outreach message.
     // If send_poll is true (the default), attach 3 tap-to-reply buttons (Sell / Rent / Not interested).
     // If send_poll is false, send the message as plain text with no buttons.
@@ -251,13 +256,13 @@ async function processAgent(agentId) {
       sendResult = await sessionManager.sendButtons(
         agentId,
         contact.number_1,
-        contact.generated_message
+        finalMessage
       );
     } else {
       sendResult = await sessionManager.sendMessage(
         agentId,
         contact.number_1,
-        contact.generated_message
+        finalMessage
       );
     }
 
@@ -276,7 +281,7 @@ async function processAgent(agentId) {
         contact_id:      contact.id,
         agent_id:        agentId,
         number_used:     contact.number_1,
-        message_text:    contact.generated_message,
+        message_text:    finalMessage,
         delivery_status: 'sent',
         sent_at:         now
       })
