@@ -20,10 +20,7 @@ app.use('/api/session', require('./routes/session'));
 app.use('/api/message', require('./routes/message'));
 app.use('/webhook', require('./routes/webhook'));
 app.use('/api/market-reports', require('./routes/marketReports'));
-<<<<<<< Updated upstream
-=======
 app.use('/api/elvi', require('./routes/elvi'));
->>>>>>> Stashed changes
 
 process.on('uncaughtException', (err) => console.error('Uncaught exception:', err));
 process.on('unhandledRejection', (err) => console.error('Unhandled rejection:', err));
@@ -33,8 +30,4 @@ app.listen(PORT, async () => {
   console.log(`EVA WhatsApp Backend running on port ${PORT}`);
   await restoreAllSessions();
   startScheduler();
-<<<<<<< Updated upstream
 });
-=======
-});
->>>>>>> Stashed changes
