@@ -20,7 +20,7 @@
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const GEMINI_MODEL   = 'gemini-1.5-flash';
+const GEMINI_MODEL   = 'gemini-2.5-flash';
 const GEMINI_TIMEOUT = 18000; // ms
 const MAX_RETRIES    = 2;     // attempts before falling back to local
 
