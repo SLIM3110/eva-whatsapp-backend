@@ -64,7 +64,7 @@ async function generateReply(originalMessage, leadReply, agentFirstName, geminiK
       '- Does NOT use hollow phrases like "Great to hear from you!" or "I hope this finds you well"\n\n' +
       'Return only the reply text, no commentary.';
     const res = await fetch(
-      'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' + geminiKey,
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=' + geminiKey,
       { method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 1.0 } }) }
     );
