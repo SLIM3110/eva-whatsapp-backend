@@ -10,7 +10,13 @@
       "Bash(cp backend/package.json .)",
       "Bash(cp backend/package-lock.json .)",
       "Bash(cp backend/Procfile .)",
-      "Bash(cp backend/.env.example .)"
+      "Bash(cp backend/.env.example .)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(node scripts/backfill-webhooks.js)",
+      "Bash(node *)",
+      "Bash(python3 -c ' *)"
     ]
   }
 }
