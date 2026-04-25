@@ -16,6 +16,10 @@ const supabase = createClient(
 );
 
 // ── Multer — memory storage ──────────────────────────────────────────────────
+// Accepts the legacy single-CSV upload (`csv_file` + comma-separated communities)
+// AND the new per-area CSV upload for comparison reports (`area_csv_1` ...
+// `area_csv_6` plus matching `area_name_1` ... `area_name_6` body fields).
+const MAX_AREAS = 6;
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 20 * 1024 * 1024 },
@@ -23,6 +27,12 @@ const upload = multer({
   { name: 'csv_file',        maxCount: 1 },
   { name: 'rental_csv_file', maxCount: 1 },
   { name: 'image_file',      maxCount: 1 },
+  ...Array.from({ length: MAX_AREAS }, (_, i) => ({
+    name: `area_csv_${i + 1}`,        maxCount: 1,
+  })),
+  ...Array.from({ length: MAX_AREAS }, (_, i) => ({
+    name: `area_rental_csv_${i + 1}`, maxCount: 1,
+  })),
 ]);
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -76,33 +86,84 @@ router.post('/generate', (req, res) => {
 
       const community = req.body.community_name || req.body.community || '';
 
-      if (!req.files?.csv_file?.[0]) {
-        return res.status(400).json({ error: 'A Property Monitor CSV file is required.' });
-      }
       if (!agent_id) {
         return res.status(400).json({ error: 'agent_id is required.' });
       }
 
-      const communities = report_type === 'comparison'
-        ? (Array.isArray(req.body['communities[]'])
+      const ts = Date.now();
+
+      // ── Per-area CSV upload (new comparison-mode flow) ─────────────────────
+      // For each `area_csv_N`, accept a matching `area_name_N` body field.
+      // Falls back to the legacy single-CSV path if no area_csv_* are provided.
+      const areaCsvs = []; // [{ csv_path, rental_csv_path|null, community_name }]
+      for (let i = 1; i <= MAX_AREAS; i++) {
+        const file = req.files?.[`area_csv_${i}`]?.[0];
+        if (!file) continue;
+        const name = (req.body[`area_name_${i}`] || '').trim();
+        if (!name) {
+          return res.status(400).json({
+            error: `area_csv_${i} was uploaded but area_name_${i} is missing — every per-area CSV needs a community/area name.`,
+          });
+        }
+        const p = path.join(os.tmpdir(), `pm_area${i}_${ts}.csv`);
+        fs.writeFileSync(p, file.buffer);
+        tempFiles.push(p);
+
+        let areaRentalPath = null;
+        const areaRentalFile = req.files?.[`area_rental_csv_${i}`]?.[0];
+        if (areaRentalFile) {
+          areaRentalPath = path.join(os.tmpdir(), `pm_area${i}_rental_${ts}.csv`);
+          fs.writeFileSync(areaRentalPath, areaRentalFile.buffer);
+          tempFiles.push(areaRentalPath);
+        }
+
+        areaCsvs.push({ csv_path: p, rental_csv_path: areaRentalPath, community_name: name });
+      }
+
+      const usingPerAreaCsvs = areaCsvs.length > 0;
+
+      if (!usingPerAreaCsvs && !req.files?.csv_file?.[0]) {
+        return res.status(400).json({
+          error: 'A Property Monitor CSV file is required (csv_file for single/legacy mode, or area_csv_1..area_csv_6 for the new comparison flow).',
+        });
+      }
+
+      let communities;
+      if (usingPerAreaCsvs) {
+        communities = areaCsvs.map(a => a.community_name);
+      } else if (report_type === 'comparison') {
+        communities = (
+          Array.isArray(req.body['communities[]'])
             ? req.body['communities[]']
-            : [req.body['communities[]']].filter(Boolean))
-        : [community].filter(Boolean);
+            : [req.body['communities[]']].filter(Boolean)
+        );
+      } else {
+        communities = [community].filter(Boolean);
+      }
 
       if (communities.length === 0) {
-        return res.status(400).json({ error: 'At least one community name is required.' });
+        return res.status(400).json({ error: 'At least one community/area name is required.' });
       }
 
       const primaryCommunity = communities[0];
-      const ts = Date.now();
 
-      // ── 2. Save uploaded files to /tmp ────────────────────────────────────
-      const csvPath = path.join(os.tmpdir(), `pm_${ts}.csv`);
-      fs.writeFileSync(csvPath, req.files.csv_file[0].buffer);
-      tempFiles.push(csvPath);
+      // ── 2. Save legacy uploaded files to /tmp ──────────────────────────────
+      // In per-area mode the area files were already written above; csvPath
+      // becomes the first area CSV so that Gemini / single-mode helpers still
+      // have a primary file to look at.
+      let csvPath;
+      if (usingPerAreaCsvs) {
+        csvPath = areaCsvs[0].csv_path;
+      } else {
+        csvPath = path.join(os.tmpdir(), `pm_${ts}.csv`);
+        fs.writeFileSync(csvPath, req.files.csv_file[0].buffer);
+        tempFiles.push(csvPath);
+      }
 
       let rentalCsvPath = null;
-      if (req.files?.rental_csv_file?.[0]) {
+      if (usingPerAreaCsvs) {
+        rentalCsvPath = areaCsvs[0].rental_csv_path;
+      } else if (req.files?.rental_csv_file?.[0]) {
         rentalCsvPath = path.join(os.tmpdir(), `pm_rental_${ts}.csv`);
         fs.writeFileSync(rentalCsvPath, req.files.rental_csv_file[0].buffer);
         tempFiles.push(rentalCsvPath);
@@ -122,7 +183,12 @@ router.post('/generate', (req, res) => {
 
       // ── 3. Python: parse CSV + run data analysis ──────────────────────────
       const analyseArgsPath = writeTmpJson(
-        { communities, report_type, rental_csv_path: rentalCsvPath },
+        {
+          communities,
+          report_type,
+          rental_csv_path: rentalCsvPath,
+          area_csvs: usingPerAreaCsvs ? areaCsvs : null,
+        },
         'analyse_args', ts
       );
       tempFiles.push(analyseArgsPath);
@@ -251,7 +317,14 @@ Return ONLY valid JSON, no markdown fences:
 
       // ── 7. Python: generate PDF ───────────────────────────────────────────
       const pdfPath      = path.join(os.tmpdir(), `eva_report_${ts}.pdf`);
-      const generateArgs = writeTmpJson({ data: reportData, rental_csv_path: rentalCsvPath }, 'gen_args', ts);
+      const generateArgs = writeTmpJson(
+        {
+          data: reportData,
+          rental_csv_path: rentalCsvPath,
+          area_csvs: usingPerAreaCsvs ? areaCsvs : null,
+        },
+        'gen_args', ts
+      );
       tempFiles.push(pdfPath, generateArgs);
 
       try {

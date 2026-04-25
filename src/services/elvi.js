@@ -22,6 +22,18 @@ const EMBED_MODEL    = 'text-embedding-004';
 const CLAUDE_MODEL   = 'claude-sonnet-4-6';
 const MAX_CONTEXT_CHUNKS = 8;  // chunks sent to Claude per query
 
+// Loud startup warning if either AI key is missing — without this, queries
+// silently fail at the first network call with a confusing "key=undefined"
+// error from Gemini or Anthropic.
+const _missing = [];
+if (!GEMINI_KEY)    _missing.push('GEMINI_API_KEY');
+if (!ANTHROPIC_KEY) _missing.push('ANTHROPIC_API_KEY');
+if (!SUPABASE_URL)  _missing.push('SUPABASE_URL');
+if (!SUPABASE_KEY)  _missing.push('SUPABASE_SERVICE_KEY');
+if (_missing.length) {
+  console.error('[elvi] Missing env vars: ' + _missing.join(', ') + ' — Elvi will fail until these are set');
+}
+
 // ── Supabase helper ───────────────────────────────────────────────────────────
 async function supabaseFetch(path, options = {}) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1${path}`, {

@@ -155,8 +155,9 @@ def radar_chart(categories, area_data, title):
     fig, ax = plt.subplots(figsize=(7.0, 4.8), subplot_kw=dict(polar=True))
     for i, (label, values) in enumerate(area_data):
         vals = values + values[:1]
-        ax.plot(angles, vals, color=EVA_PALETTE[i], linewidth=2.5, label=label)
-        ax.fill(angles, vals, color=EVA_PALETTE[i], alpha=0.12)
+        col = EVA_PALETTE[i % len(EVA_PALETTE)]
+        ax.plot(angles, vals, color=col, linewidth=2.5, label=label)
+        ax.fill(angles, vals, color=col, alpha=0.12)
     ax.set_xticks(angles[:-1])
     ax.set_xticklabels(categories, size=10, color='#1B4D3E', fontweight='bold')
     ax.set_yticklabels([])
@@ -915,11 +916,21 @@ def page_market_outlook(data):
     return els
 
 
+def _psf_numeric(val):
+    """Strip 'AED 1,622' / '1622' / None to a float; 0.0 on failure."""
+    if val is None:
+        return 0.0
+    try:
+        return float(str(val).replace('AED', '').replace(',', '').strip() or 0)
+    except Exception:
+        return 0.0
+
+
 def page_comparison_overview(areas_data):
     els = section_header('Section 01', 'Multi-Area Comparison - At a Glance')
     els.append(Paragraph(
-        'Key metrics compared across all selected communities. Green highlights indicate '
-        'the strongest performer in each category. All data sourced from Property Monitor / DLD.',
+        'Key metrics compared across all selected communities. All data sourced '
+        'from Property Monitor / DLD records uploaded for each area.',
         S('body')))
     els.append(Spacer(1, 4*mm))
     headers = ['Metric'] + [a.get('community','Area') for a in areas_data]
@@ -931,15 +942,24 @@ def page_comparison_overview(areas_data):
         ['YoY Price Growth']   + [a.get('yoy_growth','N/A')         for a in areas_data],
         ['Total Volume']       + [a.get('total_volume','N/A')        for a in areas_data],
     ]
-    cw = [55*mm] + [(PAGE_W-36*mm-55*mm)/len(areas_data)]*len(areas_data)
+    # First column is the metric label; the rest split the remaining width
+    # evenly across 1-6 areas. data_table() will scale further if needed.
+    n = max(len(areas_data), 1)
+    metric_col = 50*mm if n >= 5 else 55*mm
+    area_col   = (PAGE_W - 36*mm - metric_col) / n
+    cw = [metric_col] + [area_col] * n
     els.append(data_table(headers, rows, col_widths=cw))
-    els.append(Spacer(1, 5*mm))
+    els.append(Spacer(1, 6*mm))
+
+    # Honest per-area Avg PSF chart, replacing the previous hardcoded
+    # placeholder grouped bar that did not reflect the uploaded data.
     communities = [a.get('community','Area') for a in areas_data]
-    bed_types   = ['1BR','2BR','3BR','4BR']
-    groups = [[1520,1540,1580,1640],[1720,1760,1820,1900],[1380,1400,1430,1480]][:len(areas_data)]
-    fig = grouped_bar(bed_types, groups, communities[:len(groups)],
-                      'Avg Price Per Sqft by Bedroom Type (AED)')
-    els.append(fig_img(fig, PAGE_W-36*mm))
+    psf_values  = [_psf_numeric(a.get('avg_psf')) for a in areas_data]
+    if any(psf_values):
+        fig = bar_chart(communities, psf_values,
+                        'Avg Price Per Sqft by Area (AED)', 'AED / Sqft',
+                        highlight_last=False)
+        els.append(fig_img(fig, PAGE_W-36*mm))
     els.append(PageBreak())
     return els
 
@@ -978,7 +998,10 @@ def page_comparison_yield(areas_data):
     yields  = [_clean_pct(a.get('avg_yield','0')) for a in areas_data]
     growths = [_clean_pct(a.get('yoy_growth','0')) for a in areas_data]
 
-    fig_h_in = 2.6 + len(communities) * 0.6
+    # Cap chart height so two charts + spacer fit on one A4 page even with
+    # 6 communities (width 8.5in × height 5in renders at ~290pt = 102mm,
+    # leaving room for the second bar chart on the same page).
+    fig_h_in = min(2.6 + len(communities) * 0.6, 5.0)
 
     fig1, ax1 = plt.subplots(figsize=(8.5, fig_h_in))
     _styled_hbar(ax1, communities, yields, 'Gross Rental Yield (%)', 'Yield (%)')
@@ -1001,7 +1024,60 @@ def page_comparison_yield(areas_data):
         S('body')))
     els.append(Spacer(1, 6*mm))
     categories = ['Yield', 'Growth', 'Volume', 'Affordability', 'Liquidity']
-    area_scores = [(a.get('community','Area'), [7, 8, 6, 5, 7]) for a in areas_data]
+
+    # Compute honest 1-10 scores from the per-area metrics. Without this each
+    # area used the same hardcoded vector [7,8,6,5,7] and the radar showed
+    # identical overlapping shapes regardless of the data.
+    def _to_int(v):
+        try: return int(str(v).replace(',', '').strip() or 0)
+        except Exception: return 0
+    def _vol_b(v):
+        # 'AED 2.4B' / 'AED 850M' -> billions float
+        if not v: return 0.0
+        s = str(v).upper().replace('AED','').strip()
+        try:
+            if s.endswith('B'): return float(s[:-1].replace(',',''))
+            if s.endswith('M'): return float(s[:-1].replace(',','')) / 1000.0
+            return float(s.replace(',',''))
+        except Exception:
+            return 0.0
+    def _rank_score(values, invert=False):
+        """Return 1-10 scores; highest value gets 10 (or lowest if invert)."""
+        if not values:
+            return [5.0] * 0
+        lo, hi = min(values), max(values)
+        if hi == lo:
+            return [7.0] * len(values)
+        out = []
+        for v in values:
+            t = (v - lo) / (hi - lo)  # 0..1
+            score = 1 + t * 9         # 1..10
+            if invert:
+                score = 11 - score
+            out.append(round(score, 1))
+        return out
+
+    yields_raw  = [_clean_pct(a.get('avg_yield','0'))   for a in areas_data]
+    growth_raw  = [_clean_pct(a.get('yoy_growth','0'))  for a in areas_data]
+    txns_raw    = [_to_int(a.get('total_transactions',0)) for a in areas_data]
+    psf_raw     = [_psf_numeric(a.get('avg_psf',0))     for a in areas_data]
+    volume_raw  = [_vol_b(a.get('total_volume','0'))    for a in areas_data]
+
+    yield_s   = _rank_score(yields_raw)
+    growth_s  = _rank_score(growth_raw)
+    volume_s  = _rank_score(volume_raw)
+    afford_s  = _rank_score(psf_raw, invert=True)   # cheaper = more affordable
+    liquid_s  = _rank_score(txns_raw)               # more txns = more liquid
+
+    area_scores = []
+    for i, a in enumerate(areas_data):
+        scores = [yield_s[i] if i < len(yield_s) else 5,
+                  growth_s[i] if i < len(growth_s) else 5,
+                  volume_s[i] if i < len(volume_s) else 5,
+                  afford_s[i] if i < len(afford_s) else 5,
+                  liquid_s[i] if i < len(liquid_s) else 5]
+        area_scores.append((a.get('community','Area'), scores))
+
     els.append(fig_img(radar_chart(categories, area_scores, ''),
                        PAGE_W - 36*mm))
     els.append(PageBreak())

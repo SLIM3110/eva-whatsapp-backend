@@ -98,32 +98,60 @@ async function supabaseFetch(path, options) {
   }
 }
 
+// Per-agent in-memory lock. If a previous tick's processAgent for an agent is
+// still running (e.g. a slow Green API call or 18 s typing simulation), we
+// must NOT start another for the same agent — otherwise the older claim can
+// be reset to pending by the stuck-cutoff logic in the second processAgent
+// and the SAME contact gets sent twice.
+const _agentLocks = new Set();
+
 async function tick() {
-  if (!TEST_MODE) {
-    const uaeTime = new Date().toLocaleString('en-US', { timeZone: 'Asia/Dubai' });
-    const uaeHour = new Date(uaeTime).getHours();
-    if (uaeHour < 9 || uaeHour >= 21) {
-      console.log('Scheduler: outside UAE business hours (' + uaeHour + ':00), skipping');
-      return;
+  try {
+    if (!TEST_MODE) {
+      const uaeTime = new Date().toLocaleString('en-US', { timeZone: 'Asia/Dubai' });
+      const uaeHour = new Date(uaeTime).getHours();
+      if (uaeHour < 9 || uaeHour >= 21) {
+        console.log('Scheduler: outside UAE business hours (' + uaeHour + ':00), skipping');
+        return;
+      }
     }
+
+    const agentsRes = await supabaseFetch(
+      '/profiles?whatsapp_session_status=eq.connected&is_active=eq.true&role=in.(agent,super_admin)&select=id'
+    );
+    const agents = await agentsRes.json();
+    if (!Array.isArray(agents)) return;
+
+    await Promise.all(
+      agents.map(function(agent) {
+        return processAgent(agent.id).catch(function(e) {
+          console.error('Scheduler error for agent ' + agent.id + ':', e.message);
+        });
+      })
+    );
+  } catch (e) {
+    // Hardened: a top-level throw here would otherwise become an unhandled
+    // rejection. setInterval keeps firing regardless, but we still log.
+    console.error('[scheduler/tick] Unhandled error:', e.message);
   }
-
-  const agentsRes = await supabaseFetch(
-    '/profiles?whatsapp_session_status=eq.connected&is_active=eq.true&role=in.(agent,super_admin)&select=id'
-  );
-  const agents = await agentsRes.json();
-  if (!Array.isArray(agents)) return;
-
-  await Promise.all(
-    agents.map(function(agent) {
-      return processAgent(agent.id).catch(function(e) {
-        console.error('Scheduler error for agent ' + agent.id + ':', e.message);
-      });
-    })
-  );
 }
 
 async function processAgent(agentId) {
+  // Skip if a previous tick is still running for this agent. Prevents a slow
+  // send (typing sim + network) from being clobbered by the next tick's
+  // stuck-cutoff reset, which can otherwise cause double-sends.
+  if (_agentLocks.has(agentId)) {
+    return;
+  }
+  _agentLocks.add(agentId);
+  try {
+    return await _processAgentInner(agentId);
+  } finally {
+    _agentLocks.delete(agentId);
+  }
+}
+
+async function _processAgentInner(agentId) {
   const stuckCutoff = new Date(Date.now() - 10 * 60 * 1000).toISOString();
   await supabaseFetch(
     '/owner_contacts?assigned_agent=eq.' + agentId + '&message_status=eq.processing&created_at=lt.' + stuckCutoff,
@@ -187,11 +215,22 @@ async function processAgent(agentId) {
 
   const contact = contacts[0];
 
-  await supabaseFetch('/owner_contacts?id=eq.' + contact.id, {
-    method: 'PATCH',
-    headers: { 'Prefer': 'return=minimal' },
-    body: JSON.stringify({ message_status: 'processing' })
-  });
+  // Conditional claim: only flip pending -> processing. If another worker
+  // (or a stale tick) already claimed it, the PATCH affects 0 rows and we
+  // bail out instead of double-sending.
+  const claimRes = await supabaseFetch(
+    '/owner_contacts?id=eq.' + contact.id + '&message_status=eq.pending',
+    {
+      method: 'PATCH',
+      headers: { 'Prefer': 'return=representation' },
+      body: JSON.stringify({ message_status: 'processing' })
+    }
+  );
+  const claimed = await claimRes.json();
+  if (!Array.isArray(claimed) || claimed.length === 0) {
+    console.log('[scheduler] Contact ' + contact.id + ' was claimed by another worker — skipping');
+    return;
+  }
 
   const variants    = phoneVariants(contact.number_1);
   const orLog       = variants.map(function(v) { return 'number_used.eq.' + encodeURIComponent(v); }).join(',');

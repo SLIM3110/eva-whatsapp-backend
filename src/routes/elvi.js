@@ -84,9 +84,17 @@ async function supabaseFetch(path, options = {}) {
 }
 
 // ── Auth middleware — require x-api-key header ────────────────────────────────
+// Accept either WHATSAPP_API_KEY (the canonical key the rest of the backend
+// uses) or API_SECRET_KEY (legacy name). The frontend sends WHATSAPP_API_KEY,
+// so without this fallback every Elvi request returned 401 in production.
 function requireApiKey(req, res, next) {
   const key = req.headers['x-api-key'];
-  if (!key || key !== process.env.API_SECRET_KEY) {
+  const expected = process.env.WHATSAPP_API_KEY || process.env.API_SECRET_KEY;
+  if (!expected) {
+    console.error('[elvi/auth] No WHATSAPP_API_KEY or API_SECRET_KEY env var — every request will 401');
+    return res.status(500).json({ error: 'Server misconfigured: API key env var missing' });
+  }
+  if (!key || key !== expected) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   next();
