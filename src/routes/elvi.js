@@ -37,6 +37,7 @@ const router  = express.Router();
 const {
   ingestDocument,
   queryElvi,
+  queryElviStream,
 } = require('../services/elvi');
 
 // ── Multer — in-memory storage for uploaded docs ──────────────────────────────
@@ -107,21 +108,51 @@ router.use(requireApiKey);
 // Body: { agentId, sessionId?, message, history?, developerId?, projectId?, buildingId? }
 // =============================================================================
 router.post('/query', async (req, res) => {
-  try {
-    const {
-      agentId,
-      sessionId,
-      message,
-      history      = [],
-      developerId  = null,
-      projectId    = null,
-      buildingId   = null,
-    } = req.body;
+  const {
+    agentId,
+    sessionId,
+    message,
+    history      = [],
+    developerId  = null,
+    projectId    = null,
+    buildingId   = null,
+    stream       = false,
+  } = req.body;
 
-    if (!agentId || !message) {
-      return res.status(400).json({ error: 'agentId and message are required' });
+  if (!agentId || !message) {
+    return res.status(400).json({ error: 'agentId and message are required' });
+  }
+
+  // ── Streaming mode — SSE ────────────────────────────────────────────────────
+  if (stream) {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no'); // disable nginx buffering
+    res.flushHeaders();
+
+    const writeChunk = (payload) => {
+      try {
+        res.write(`data: ${JSON.stringify(payload)}\n\n`);
+      } catch (_) { /* client disconnected */ }
+    };
+
+    try {
+      await queryElviStream(
+        { agentId, sessionId, message, history, developerId, projectId, buildingId },
+        writeChunk
+      );
+    } catch (err) {
+      console.error('[elvi/query/stream]', err.message);
+      writeChunk({ type: 'error', error: err.message });
+    } finally {
+      res.end();
     }
+    return;
+  }
 
+  // ── Non-streaming mode — JSON (unchanged) ───────────────────────────────────
+  try {
     const result = await queryElvi({
       agentId,
       sessionId,
@@ -131,7 +162,6 @@ router.post('/query', async (req, res) => {
       projectId,
       buildingId,
     });
-
     res.json(result);
     // result shape: { reply: string, sources: [...], sessionId: string }
   } catch (err) {

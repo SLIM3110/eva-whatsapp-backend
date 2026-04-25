@@ -1335,11 +1335,145 @@ async function queryElvi({ agentId, sessionId, message, history = [], developerI
   };
 }
 
+// ── Streaming query ───────────────────────────────────────────────────────────
+// Like queryElvi but calls Claude with stream:true and calls writeChunk() for
+// each SSE event. The route is responsible for setting SSE headers and flushing.
+//
+// writeChunk receives objects of shape:
+//   { type: 'chunk', text: string }
+//   { type: 'end', sources: [...], conversationId: string|null, sessionId: string }
+//   { type: 'error', error: string }
+async function queryElviStream(params, writeChunk) {
+  const { agentId, sessionId, message, history = [], developerId, projectId, buildingId } = params;
+
+  // 1. Embed the question
+  const queryEmbedding = await generateEmbedding(message);
+
+  // 2. Search the knowledge base
+  const chunks = await searchDocs(queryEmbedding, { developerId, projectId, buildingId });
+
+  // 3. Build context from retrieved chunks
+  const contextBlocks = (chunks || []).map((c, i) => {
+    const location = [
+      c.doc_name,
+      c.doc_type,
+      c.doc_date ? `(${c.doc_date})` : '',
+      c.source_group_name ? `[via ${c.source_group_name}]` : '',
+    ].filter(Boolean).join(' ');
+    return `[Document ${i + 1}: ${location}]\n${c.chunk_text}`;
+  }).join('\n\n---\n\n');
+
+  const hasContext = contextBlocks.length > 0;
+
+  // 4. Build conversation history for Claude (last 6 exchanges max)
+  const recentHistory = history.slice(-12).map(h => ({
+    role:    h.role === 'user' ? 'user' : 'assistant',
+    content: h.content || h.message || '',
+  })).filter(h => h.content.length > 0);
+
+  // 5. Build Claude messages array
+  const userContent = hasContext
+    ? `RETRIEVED DOCUMENTS:\n\n${contextBlocks}\n\n---\n\nAGENT QUESTION: ${message}`
+    : `AGENT QUESTION: ${message}\n\nNote: No relevant documents were found in the knowledge base for this question.`;
+
+  const messages = [
+    ...recentHistory,
+    { role: 'user', content: userContent },
+  ];
+
+  // 6. Call Claude with streaming enabled
+  const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
+    method:  'POST',
+    headers: {
+      'x-api-key':         ANTHROPIC_KEY,
+      'anthropic-version': '2023-06-01',
+      'Content-Type':      'application/json',
+    },
+    body: JSON.stringify({
+      model:      CLAUDE_MODEL,
+      max_tokens: 1024,
+      system:     buildSystemPrompt(),
+      messages,
+      stream:     true,
+    }),
+  });
+
+  if (!claudeRes.ok) {
+    const body = await claudeRes.text();
+    throw new Error(`Claude API error [${claudeRes.status}]: ${body}`);
+  }
+
+  // Read Claude's SSE stream and forward tokens to the caller
+  let fullReply = '';
+  const reader  = claudeRes.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop() || ''; // keep any incomplete line for next iteration
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const raw = line.slice(6).trim();
+        if (!raw || raw === '[DONE]') continue;
+        try {
+          const evt = JSON.parse(raw);
+          if (evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta') {
+            const text = evt.delta.text;
+            fullReply += text;
+            writeChunk({ type: 'chunk', text });
+          }
+        } catch (_parseErr) { /* ignore malformed SSE lines */ }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  // 7. Save user message + assistant reply to elvi_conversations
+  const sourceIds = (chunks || []).map(c => c.id).filter(Boolean);
+
+  const [, assistantRes] = await Promise.all([
+    supabaseFetch('/elvi_conversations', {
+      method:  'POST',
+      headers: { 'Prefer': 'return=representation' },
+      body:    JSON.stringify({ session_id: sessionId, agent_id: agentId, role: 'user', message, sources: [] }),
+    }),
+    supabaseFetch('/elvi_conversations', {
+      method:  'POST',
+      headers: { 'Prefer': 'return=representation' },
+      body:    JSON.stringify({ session_id: sessionId, agent_id: agentId, role: 'assistant', message: fullReply, sources: sourceIds }),
+    }),
+  ]);
+
+  const [assistantRow] = await assistantRes.json();
+
+  // 8. Send end event with source metadata
+  const sources = (chunks || []).map(c => ({
+    id:          c.id,
+    docName:     c.doc_name,
+    docType:     c.doc_type,
+    docDate:     c.doc_date,
+    similarity:  Math.round(c.similarity * 100),
+    source:      c.source,
+    sourceGroup: c.source_group_name,
+  }));
+
+  writeChunk({ type: 'end', sources, conversationId: assistantRow?.id || null, sessionId });
+}
+
 // ── Exports ───────────────────────────────────────────────────────────────────
 module.exports = {
   ingestDocument,
   ingestTextMessage,
   queryElvi,
+  queryElviStream,
   generateEmbedding,
   extractText,
   chunkText,
