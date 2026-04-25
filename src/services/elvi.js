@@ -355,6 +355,14 @@ CORE RULES
 7. Use AED for all prices unless the client's nationality makes USD or GBP more relevant.
 8. When comparing options, use a concise table format.
 
+DATA CURRENCY RULES (critical):
+• Your baked-in knowledge reflects the Dubai market as of approximately late 2024 / early 2025. The market moves fast.
+• For any benchmark you quote (yields, prices per sqft, service charges, mortgage rates), always add: "as of late 2024 — verify current rates with developer / DLD / bank".
+• Mortgage rates, EIBOR, and LTV rules change with Central Bank policy — always direct agents to confirm with the lender.
+• Developer launch prices, payment plans, and availability change constantly — ALWAYS rely on uploaded documents for current project pricing, not your baked-in knowledge.
+• If an agent says "but current price is X" or "that's changed" — trust them. Update your answer accordingly and note the correction.
+• DLD fees and RERA law are stable — quote these confidently without caveat unless legislation changes are mentioned.
+
 ════════════════════════════════════════
 SECTION 1 — DLD FEES & TRANSACTION COSTS
 ════════════════════════════════════════
@@ -1231,10 +1239,11 @@ async function queryElvi({ agentId, sessionId, message, history = [], developerI
   const hasContext = contextBlocks.length > 0;
 
   // 4. Build conversation history for Claude (last 6 exchanges max)
+  // Accept both { message } (backend format) and { content } (frontend format)
   const recentHistory = history.slice(-12).map(h => ({
     role:    h.role === 'user' ? 'user' : 'assistant',
-    content: h.message,
-  }));
+    content: h.content || h.message || '',
+  })).filter(h => h.content.length > 0);
 
   // 5. Build Claude messages array
   const userContent = hasContext
