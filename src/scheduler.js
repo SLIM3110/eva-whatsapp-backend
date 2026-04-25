@@ -165,11 +165,19 @@ async function _processAgentInner(agentId) {
   const todayUAE = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Dubai' });
 
   const profileRes = await supabaseFetch(
-    '/profiles?id=eq.' + agentId + '&select=sending_paused,created_at'
+    '/profiles?id=eq.' + agentId + '&select=sending_paused,created_at,whatsapp_session_status'
   );
   const profiles = await profileRes.json();
   if (!profiles.length) return;
   const profile = profiles[0];
+
+  // Hard stop — if WhatsApp is not connected at the moment we're about to send,
+  // don't claim any contact or attempt any send. The health check or webhook will
+  // flip the status back to connected once the agent rescans their QR code.
+  if (profile.whatsapp_session_status !== 'connected') {
+    console.log('Agent ' + agentId + ' WhatsApp is ' + (profile.whatsapp_session_status || 'unknown') + ' — skipping send');
+    return;
+  }
 
   if (profile.sending_paused === true) {
     console.log('Agent ' + agentId + ' has paused sending, skipping');
