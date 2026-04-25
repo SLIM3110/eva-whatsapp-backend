@@ -38,29 +38,32 @@ EVA_PALETTE = ['#1B4D3E','#C9A96E','#2A6B57','#8B6914','#4A8C78','#E8D5A3','#5B8
 
 # ── Styles ─────────────────────────────────────────────────────────────────────
 def S(name, **kw):
+    # Note: ReportLab's ParagraphStyle ignores any `tracking=` kwarg silently
+    # (it's not in PropertySet.defaults), so we don't pass it. To fake letter
+    # spacing in a label, the call-site inserts spaces in the actual string.
     base = {
-        'cover_eyebrow':  dict(fontName='Helvetica',      fontSize=8,  textColor=GOLD,       leading=11, alignment=TA_LEFT,   tracking=6),
-        'cover_title':    dict(fontName='Helvetica-Bold',  fontSize=26, textColor=WHITE,      leading=32, alignment=TA_LEFT),
-        'cover_community':dict(fontName='Helvetica-Bold',  fontSize=17, textColor=GOLD,       leading=22, alignment=TA_LEFT,   tracking=3),
-        'cover_agent':    dict(fontName='Helvetica',       fontSize=10, textColor=CREAM,      leading=14, alignment=TA_LEFT),
-        'cover_agent_name':dict(fontName='Helvetica-Bold', fontSize=12, textColor=WHITE,      leading=16, alignment=TA_LEFT),
-        'section_label':  dict(fontName='Helvetica-Bold',  fontSize=8,  textColor=GOLD,       leading=10, alignment=TA_LEFT,   tracking=5, spaceAfter=3),
-        'h1':             dict(fontName='Helvetica-Bold',  fontSize=20, textColor=DARK_GREEN, leading=24, alignment=TA_LEFT,   spaceAfter=6),
-        'h2':             dict(fontName='Helvetica-Bold',  fontSize=13, textColor=DARK_GREEN, leading=17, alignment=TA_LEFT,   spaceAfter=5, spaceBefore=8),
-        'h3':             dict(fontName='Helvetica-Bold',  fontSize=10.5,textColor=DARK_GREEN,leading=14, alignment=TA_LEFT,   spaceAfter=3),
-        'body':           dict(fontName='Helvetica',       fontSize=9.5,textColor=BLACK,      leading=15, alignment=TA_LEFT,   spaceAfter=7),
-        'body_small':     dict(fontName='Helvetica',       fontSize=8.5,textColor=MID_GREY,   leading=13, alignment=TA_LEFT),
-        'callout':        dict(fontName='Helvetica-Oblique',fontSize=10,textColor=DARK_GREEN, leading=16, alignment=TA_LEFT,   leftIndent=10, spaceAfter=7),
-        'metric_big':     dict(fontName='Helvetica-Bold',  fontSize=21, textColor=DARK_GREEN, leading=25, alignment=TA_CENTER),
-        'metric_label':   dict(fontName='Helvetica',       fontSize=7.5,textColor=MID_GREY,   leading=10, alignment=TA_CENTER, tracking=3),
-        'metric_sub':     dict(fontName='Helvetica',       fontSize=8,  textColor=GOLD,       leading=10, alignment=TA_CENTER),
-        'table_head':     dict(fontName='Helvetica-Bold',  fontSize=8.5,textColor=WHITE,      leading=11, alignment=TA_CENTER),
-        'table_cell':     dict(fontName='Helvetica',       fontSize=8.5,textColor=BLACK,      leading=11, alignment=TA_CENTER),
-        'table_cell_l':   dict(fontName='Helvetica',       fontSize=8.5,textColor=BLACK,      leading=11, alignment=TA_LEFT),
-        'table_bold':     dict(fontName='Helvetica-Bold',  fontSize=8.5,textColor=DARK_GREEN, leading=11, alignment=TA_CENTER),
-        'outlook_body':   dict(fontName='Helvetica',       fontSize=9.5,textColor=BLACK,      leading=16, alignment=TA_LEFT,   spaceAfter=8),
-        'outlook_label':  dict(fontName='Helvetica-Bold',  fontSize=8,  textColor=WHITE,      leading=10, alignment=TA_CENTER),
-        'disclaimer':     dict(fontName='Helvetica',       fontSize=7,  textColor=MID_GREY,   leading=10, alignment=TA_LEFT),
+        'cover_eyebrow':  dict(fontName='Helvetica',       fontSize=8,   textColor=GOLD,       leading=11, alignment=TA_LEFT),
+        'cover_title':    dict(fontName='Helvetica-Bold',  fontSize=26,  textColor=WHITE,      leading=32, alignment=TA_LEFT),
+        'cover_community':dict(fontName='Helvetica-Bold',  fontSize=17,  textColor=GOLD,       leading=22, alignment=TA_LEFT),
+        'cover_agent':    dict(fontName='Helvetica',       fontSize=10,  textColor=CREAM,      leading=14, alignment=TA_LEFT),
+        'cover_agent_name':dict(fontName='Helvetica-Bold', fontSize=12,  textColor=WHITE,      leading=16, alignment=TA_LEFT),
+        'section_label':  dict(fontName='Helvetica-Bold',  fontSize=8,   textColor=GOLD,       leading=10, alignment=TA_LEFT, spaceAfter=3),
+        'h1':             dict(fontName='Helvetica-Bold',  fontSize=20,  textColor=DARK_GREEN, leading=24, alignment=TA_LEFT, spaceAfter=6),
+        'h2':             dict(fontName='Helvetica-Bold',  fontSize=13,  textColor=DARK_GREEN, leading=17, alignment=TA_LEFT, spaceAfter=5, spaceBefore=8),
+        'h3':             dict(fontName='Helvetica-Bold',  fontSize=10.5,textColor=DARK_GREEN, leading=14, alignment=TA_LEFT, spaceAfter=3),
+        'body':           dict(fontName='Helvetica',       fontSize=9.5, textColor=BLACK,      leading=15, alignment=TA_LEFT, spaceAfter=7),
+        'body_small':     dict(fontName='Helvetica',       fontSize=8.5, textColor=MID_GREY,   leading=13, alignment=TA_LEFT),
+        'callout':        dict(fontName='Helvetica-Oblique',fontSize=10, textColor=DARK_GREEN, leading=16, alignment=TA_LEFT, leftIndent=10, spaceAfter=7),
+        'metric_big':     dict(fontName='Helvetica-Bold',  fontSize=21,  textColor=DARK_GREEN, leading=25, alignment=TA_CENTER),
+        'metric_label':   dict(fontName='Helvetica',       fontSize=7.5, textColor=MID_GREY,   leading=10, alignment=TA_CENTER),
+        'metric_sub':     dict(fontName='Helvetica',       fontSize=8,   textColor=GOLD,       leading=10, alignment=TA_CENTER),
+        'table_head':     dict(fontName='Helvetica-Bold',  fontSize=8.5, textColor=WHITE,      leading=11, alignment=TA_CENTER),
+        'table_cell':     dict(fontName='Helvetica',       fontSize=8.5, textColor=BLACK,      leading=11, alignment=TA_CENTER),
+        'table_cell_l':   dict(fontName='Helvetica',       fontSize=8.5, textColor=BLACK,      leading=11, alignment=TA_LEFT),
+        'table_bold':     dict(fontName='Helvetica-Bold',  fontSize=8.5, textColor=DARK_GREEN, leading=11, alignment=TA_CENTER),
+        'outlook_body':   dict(fontName='Helvetica',       fontSize=9.5, textColor=BLACK,      leading=16, alignment=TA_LEFT, spaceAfter=8),
+        'outlook_label':  dict(fontName='Helvetica-Bold',  fontSize=8,   textColor=WHITE,      leading=10, alignment=TA_CENTER),
+        'disclaimer':     dict(fontName='Helvetica',       fontSize=7,   textColor=MID_GREY,   leading=10, alignment=TA_LEFT),
     }
     params = base.get(name, {})
     params.update(kw)
@@ -68,43 +71,56 @@ def S(name, **kw):
 
 
 # ── Charts ─────────────────────────────────────────────────────────────────────
-def fig_img(fig, w, h):
+def fig_img(fig, w, h=None):
+    # If h is omitted, preserve the figure's natural aspect ratio so the
+    # rendered chart isn't stretched. This makes line/bar charts crisper.
+    if h is None:
+        fw, fh = fig.get_size_inches()
+        h = w * (fh / fw)
     buf = io.BytesIO()
-    fig.savefig(buf, format='png', dpi=150, bbox_inches='tight', facecolor='none')
+    fig.savefig(buf, format='png', dpi=200, bbox_inches='tight', facecolor='none')
     plt.close(fig)
     buf.seek(0)
     return Image(buf, width=w, height=h)
 
 def bar_chart(labels, values, title, ylabel, highlight_last=True):
-    fig, ax = plt.subplots(figsize=(8.5, 3.2))
+    fig, ax = plt.subplots(figsize=(9.0, 3.6))
     cols = [EVA_PALETTE[0]] * len(values)
     if highlight_last: cols[-1] = EVA_PALETTE[1]
-    ax.bar(range(len(labels)), values, color=cols, width=0.6, zorder=3)
+    bars = ax.bar(range(len(labels)), values, color=cols, width=0.62, zorder=3)
     ax.set_xticks(range(len(labels)))
-    ax.set_xticklabels(labels, fontsize=7.5, color='#6B6B6B')
-    ax.set_ylabel(ylabel, fontsize=8, color='#6B6B6B')
-    ax.set_title(title, fontsize=9, fontweight='bold', color='#1B4D3E', pad=8)
-    ax.tick_params(axis='y', labelsize=7.5, colors='#6B6B6B')
+    ax.set_xticklabels(labels, fontsize=8.5, color='#3A3A3A')
+    ax.set_ylabel(ylabel, fontsize=9, color='#6B6B6B')
+    ax.set_title(title, fontsize=11, fontweight='bold', color='#1B4D3E', pad=10)
+    ax.tick_params(axis='y', labelsize=8.5, colors='#6B6B6B')
     ax.spines[['top','right']].set_visible(False)
-    ax.spines[['left','bottom']].set_color('#DDDDDD')
-    ax.grid(axis='y', color='#EEEEEE', zorder=0)
+    ax.spines[['left','bottom']].set_color('#CFCFCF')
+    ax.grid(axis='y', color='#EFEFEF', zorder=0, linewidth=0.6)
     ax.set_facecolor('white')
+    if values:
+        top = max(values)
+        ax.set_ylim(0, top * 1.18)
+        for b, v in zip(bars, values):
+            ax.text(b.get_x() + b.get_width()/2, b.get_height() + top*0.025,
+                    f'{int(v):,}' if isinstance(v, (int, float)) and v >= 100 else f'{v}',
+                    ha='center', va='bottom', fontsize=8, color='#1B4D3E', fontweight='bold')
     fig.patch.set_alpha(0)
     fig.tight_layout()
     return fig
 
 def line_chart(labels, series, title):
     """series = [(values, label), ...]"""
-    fig, ax = plt.subplots(figsize=(8.5, 3.2))
+    fig, ax = plt.subplots(figsize=(9.0, 3.6))
     for i, (vals, lbl) in enumerate(series):
-        ax.plot(labels, vals, color=EVA_PALETTE[i], linewidth=2.2,
-                marker='o', markersize=4, label=lbl, zorder=3)
-    ax.set_title(title, fontsize=9, fontweight='bold', color='#1B4D3E', pad=8)
-    ax.legend(fontsize=7.5, framealpha=0)
-    ax.tick_params(axis='both', labelsize=7.5, colors='#6B6B6B')
+        ax.plot(labels, vals, color=EVA_PALETTE[i], linewidth=2.4,
+                marker='o', markersize=5, markeredgecolor='white', markeredgewidth=1.0,
+                label=lbl, zorder=3)
+    ax.set_title(title, fontsize=11, fontweight='bold', color='#1B4D3E', pad=10)
+    ax.legend(fontsize=8.5, framealpha=0, loc='best')
+    ax.tick_params(axis='both', labelsize=8.5, colors='#6B6B6B')
     ax.spines[['top','right']].set_visible(False)
-    ax.spines[['left','bottom']].set_color('#DDDDDD')
-    ax.grid(color='#EEEEEE', zorder=0)
+    ax.spines[['left','bottom']].set_color('#CFCFCF')
+    ax.grid(color='#EFEFEF', zorder=0, linewidth=0.6)
     ax.set_facecolor('white')
     fig.patch.set_alpha(0)
     fig.tight_layout()
@@ -114,18 +130,18 @@ def grouped_bar(labels, groups, group_labels, title):
     """Multi-community comparison bar."""
     x = np.arange(len(labels))
     w = 0.8 / len(groups)
-    fig, ax = plt.subplots(figsize=(8.5, 3.5))
+    fig, ax = plt.subplots(figsize=(9.0, 3.8))
     for i, (vals, lbl) in enumerate(zip(groups, group_labels)):
         ax.bar(x + i*w - 0.4 + w/2, vals, w*0.9, label=lbl,
                color=EVA_PALETTE[i], zorder=3)
     ax.set_xticks(x)
-    ax.set_xticklabels(labels, fontsize=8, color='#6B6B6B')
-    ax.set_title(title, fontsize=9, fontweight='bold', color='#1B4D3E', pad=8)
-    ax.legend(fontsize=7.5, framealpha=0)
-    ax.tick_params(axis='y', labelsize=7.5, colors='#6B6B6B')
+    ax.set_xticklabels(labels, fontsize=9, color='#3A3A3A')
+    ax.set_title(title, fontsize=11, fontweight='bold', color='#1B4D3E', pad=10)
+    ax.legend(fontsize=8.5, framealpha=0, loc='upper left')
+    ax.tick_params(axis='y', labelsize=8.5, colors='#6B6B6B')
     ax.spines[['top','right']].set_visible(False)
-    ax.spines[['left','bottom']].set_color('#DDDDDD')
-    ax.grid(axis='y', color='#EEEEEE', zorder=0)
+    ax.spines[['left','bottom']].set_color('#CFCFCF')
+    ax.grid(axis='y', color='#EFEFEF', zorder=0, linewidth=0.6)
     ax.set_facecolor('white')
     fig.patch.set_alpha(0)
     fig.tight_layout()
@@ -155,16 +171,18 @@ def radar_chart(categories, area_data, title):
     return fig
 
 def donut_chart(labels, values, title):
-    fig, ax = plt.subplots(figsize=(3.2, 2.8))
+    fig, ax = plt.subplots(figsize=(4.0, 3.4))
     wedges, _, autotexts = ax.pie(
         values, autopct='%1.0f%%', colors=EVA_PALETTE[:len(values)],
-        startangle=90, wedgeprops=dict(width=0.55, edgecolor='white'),
-        pctdistance=0.75)
+        startangle=90, wedgeprops=dict(width=0.55, edgecolor='white', linewidth=1.5),
+        pctdistance=0.76)
     for t in autotexts:
-        t.set_fontsize(7.5); t.set_color('white'); t.set_fontweight('bold')
+        t.set_fontsize(9); t.set_color('white'); t.set_fontweight('bold')
     ax.legend(wedges, labels, loc='lower center',
-              bbox_to_anchor=(0.5, -0.18), ncol=2, fontsize=7, framealpha=0)
-    ax.set_title(title, fontsize=9, fontweight='bold', color='#1B4D3E', pad=4)
+              bbox_to_anchor=(0.5, -0.12), ncol=min(len(labels), 3),
+              fontsize=8.5, framealpha=0)
+    if title:
+        ax.set_title(title, fontsize=10, fontweight='bold', color='#1B4D3E', pad=6)
     fig.patch.set_alpha(0); fig.tight_layout()
     return fig
 
@@ -182,17 +200,19 @@ def metric_cards(metrics):
     cw = (PAGE_W - 36*mm) / len(metrics)
     cells = [[
         Paragraph(v, S('metric_big')),
+        Spacer(1, 2),
         Paragraph(l, S('metric_label')),
-        *([] if not sub else [Paragraph(sub, S('metric_sub'))])
+        *([] if not sub else [Spacer(1, 2), Paragraph(sub, S('metric_sub'))])
     ] for v, l, sub in metrics]
     t = Table([cells], colWidths=[cw]*len(metrics))
     t.setStyle(TableStyle([
         ('BACKGROUND', (0,0), (-1,-1), CREAM),
-        ('TOPPADDING',    (0,0),(-1,-1), 14),
-        ('BOTTOMPADDING', (0,0),(-1,-1), 14),
+        ('TOPPADDING',    (0,0),(-1,-1), 16),
+        ('BOTTOMPADDING', (0,0),(-1,-1), 16),
         ('LEFTPADDING',   (0,0),(-1,-1), 10),
         ('RIGHTPADDING',  (0,0),(-1,-1), 10),
         ('LINEAFTER', (0,0),(-2,-1), 0.5, LIGHT_GREY),
+        ('LINEABOVE', (0,0),(-1,-1), 1.5, GOLD),
         ('VALIGN', (0,0),(-1,-1), 'MIDDLE'),
     ]))
     return t
@@ -201,6 +221,14 @@ def data_table(headers, rows, col_widths=None, highlight_row=None):
     usable = PAGE_W - 36*mm
     if not col_widths:
         col_widths = [usable/len(headers)]*len(headers)
+    else:
+        # Many call sites supply widths whose total exceeds the usable page
+        # width — that produces overflowing tables and ugly wrapping.
+        # Scale all columns proportionally if they exceed the frame.
+        total = sum(col_widths)
+        if total > usable + 0.5:
+            scale = usable / total
+            col_widths = [w * scale for w in col_widths]
     hrow = [Paragraph(h, S('table_head')) for h in headers]
     data = [[Paragraph(str(c), S('table_cell_l') if j==0 else S('table_cell'))
              for j, c in enumerate(r)] for r in rows]
@@ -585,14 +613,16 @@ def page_cover(data):
     m1v = data.get('avg_psf',        data.get('cover_m1v','AED 1,622'))
     m2v = data.get('yoy_growth',     data.get('cover_m2v','+18.4%'))
     m3v = data.get('avg_yield',      data.get('cover_m3v','6.8%'))
+    hero_value = ParagraphStyle('_hv', fontName='Helvetica-Bold', fontSize=19, textColor=WHITE, leading=23, alignment=TA_CENTER)
+    hero_label = ParagraphStyle('_hl', fontName='Helvetica',      fontSize=7.5, textColor=GOLD, leading=10, alignment=TA_CENTER)
     hero_data = [[
-        Paragraph(m1v, ParagraphStyle('_', fontName='Helvetica-Bold', fontSize=19, textColor=WHITE, leading=23, alignment=TA_CENTER)),
-        Paragraph(m2v, ParagraphStyle('_', fontName='Helvetica-Bold', fontSize=19, textColor=WHITE, leading=23, alignment=TA_CENTER)),
-        Paragraph(m3v, ParagraphStyle('_', fontName='Helvetica-Bold', fontSize=19, textColor=WHITE, leading=23, alignment=TA_CENTER)),
+        Paragraph(m1v, hero_value),
+        Paragraph(m2v, hero_value),
+        Paragraph(m3v, hero_value),
     ],[
-        Paragraph('AVG PRICE / SQFT',  ParagraphStyle('_', fontName='Helvetica', fontSize=7.5, textColor=GOLD, leading=10, alignment=TA_CENTER, tracking=2)),
-        Paragraph('YoY PRICE GROWTH',  ParagraphStyle('_', fontName='Helvetica', fontSize=7.5, textColor=GOLD, leading=10, alignment=TA_CENTER, tracking=2)),
-        Paragraph('AVG RENTAL YIELD',  ParagraphStyle('_', fontName='Helvetica', fontSize=7.5, textColor=GOLD, leading=10, alignment=TA_CENTER, tracking=2)),
+        Paragraph('AVG PRICE / SQFT', hero_label),
+        Paragraph('YoY PRICE GROWTH', hero_label),
+        Paragraph('AVG RENTAL YIELD', hero_label),
     ]]
     cw = (PAGE_W - 36*mm) / 3
     t = Table(hero_data, colWidths=[cw,cw,cw])
@@ -652,10 +682,10 @@ def page_transaction_analysis(data):
     psf    = data.get('monthly_psf',    [1480,1490,1510,1525,1540,1560,1570,1585,1600,1612,1618,1622])
     prices = data.get('monthly_price',  [2.4,2.45,2.5,2.52,2.55,2.6,2.63,2.68,2.72,2.77,2.81,2.84])
 
-    els.append(fig_img(bar_chart(months, vol, 'Monthly Transaction Volume', 'No. Transactions'), PAGE_W-36*mm, 190))
+    els.append(fig_img(bar_chart(months, vol, 'Monthly Transaction Volume', 'No. Transactions'), PAGE_W-36*mm))
     els.append(Spacer(1, 6*mm))
     els.append(fig_img(line_chart(months, [(psf,'Avg PSF (AED)'),(prices,'Avg Price (AED M)')],
-        'Price Per Sqft & Average Sale Price Trend'), PAGE_W-36*mm, 190))
+        'Price Per Sqft & Average Sale Price Trend'), PAGE_W-36*mm))
     els.append(Spacer(1, 3*mm))
 
     if 'prop_type_data' in data:
@@ -689,7 +719,7 @@ def page_rental_analysis(data):
     r3 = data.get('rent_3br', [184,186,187,190,192,194,195,196,197,198,198,198])
     fig_r = line_chart(months, [(r2,"2-BR Annual Rent (AED '000)"),(r3,"3-BR Annual Rent (AED '000)")],
                        'Rental Value Trend — 12 Months')
-    els.append(fig_img(fig_r, PAGE_W - 36*mm, 190))
+    els.append(fig_img(fig_r, PAGE_W - 36*mm))
     els.append(Spacer(1, 8*mm))
 
     labels = data.get('rental_mix_labels', ['1BR','2BR','3BR','4BR','5BR+'])
@@ -697,7 +727,7 @@ def page_rental_analysis(data):
     els.append(Paragraph('Rental Mix by Property Type', S('h2')))
     els.append(Spacer(1, 3*mm))
     fig_d = donut_chart(labels, vals, '')
-    dt = Table([[fig_img(fig_d, 190, 190)]], colWidths=[PAGE_W - 36*mm])
+    dt = Table([[fig_img(fig_d, 220)]], colWidths=[PAGE_W - 36*mm])
     dt.setStyle(TableStyle([('ALIGN',(0,0),(-1,-1),'CENTER'),
                              ('LEFTPADDING',(0,0),(-1,-1),0),
                              ('RIGHTPADDING',(0,0),(-1,-1),0)]))
@@ -812,7 +842,7 @@ def page_investment_highlights(data):
     if 'years' in data and 'yoy_price' in data:
         fig = bar_chart(data['years'], data['yoy_price'],
                         'Price Per Sqft - Historical Trend (AED)', 'AED / Sqft', highlight_last=True)
-        els.append(fig_img(fig, PAGE_W-36*mm, 190))
+        els.append(fig_img(fig, PAGE_W-36*mm))
     els.append(PageBreak())
     return els
 
@@ -909,7 +939,7 @@ def page_comparison_overview(areas_data):
     groups = [[1520,1540,1580,1640],[1720,1760,1820,1900],[1380,1400,1430,1480]][:len(areas_data)]
     fig = grouped_bar(bed_types, groups, communities[:len(groups)],
                       'Avg Price Per Sqft by Bedroom Type (AED)')
-    els.append(fig_img(fig, PAGE_W-36*mm, 205))
+    els.append(fig_img(fig, PAGE_W-36*mm))
     els.append(PageBreak())
     return els
 
@@ -949,20 +979,19 @@ def page_comparison_yield(areas_data):
     growths = [_clean_pct(a.get('yoy_growth','0')) for a in areas_data]
 
     fig_h_in = 2.6 + len(communities) * 0.6
-    fig_h_pt = int(fig_h_in / 7.5 * (PAGE_W - 36*mm))
 
-    fig1, ax1 = plt.subplots(figsize=(7.5, fig_h_in))
+    fig1, ax1 = plt.subplots(figsize=(8.5, fig_h_in))
     _styled_hbar(ax1, communities, yields, 'Gross Rental Yield (%)', 'Yield (%)')
     fig1.patch.set_alpha(0)
     fig1.tight_layout(pad=1.8)
-    els.append(fig_img(fig1, PAGE_W - 36*mm, fig_h_pt))
+    els.append(fig_img(fig1, PAGE_W - 36*mm))
     els.append(Spacer(1, 10*mm))
 
-    fig2, ax2 = plt.subplots(figsize=(7.5, fig_h_in))
+    fig2, ax2 = plt.subplots(figsize=(8.5, fig_h_in))
     _styled_hbar(ax2, communities, growths, 'Year-on-Year Price Growth (%)', 'Growth (%)')
     fig2.patch.set_alpha(0)
     fig2.tight_layout(pad=1.8)
-    els.append(fig_img(fig2, PAGE_W - 36*mm, fig_h_pt))
+    els.append(fig_img(fig2, PAGE_W - 36*mm))
     els.append(PageBreak())
 
     els += section_header('Section 02 (cont.)', 'Investment Score — Overall Comparison')
@@ -974,7 +1003,7 @@ def page_comparison_yield(areas_data):
     categories = ['Yield', 'Growth', 'Volume', 'Affordability', 'Liquidity']
     area_scores = [(a.get('community','Area'), [7, 8, 6, 5, 7]) for a in areas_data]
     els.append(fig_img(radar_chart(categories, area_scores, ''),
-                       PAGE_W - 36*mm, 280))
+                       PAGE_W - 36*mm))
     els.append(PageBreak())
     return els
 

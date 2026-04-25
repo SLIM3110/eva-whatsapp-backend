@@ -212,7 +212,16 @@ async function sendMessage(agentId, number, message) {
   });
 
   const data = await res.json();
-  if (!res.ok) throw new Error(`Green API send error: ${JSON.stringify(data)}`);
+  if (!res.ok) {
+    const errMsg = `Green API send error: ${JSON.stringify(data)}`;
+    // If instance is no longer authorized, update Supabase immediately so the
+    // scheduler and dashboard reflect reality without waiting for health check.
+    if (res.status === 401 || /unauthorized|not.?authorized/i.test(JSON.stringify(data))) {
+      await updateSupabaseStatus(agentId, 'disconnected');
+      console.warn(`[sessionManager] Agent ${agentId} marked disconnected — sendMessage got unauthorized from Green API`);
+    }
+    throw new Error(errMsg);
+  }
 
   console.log(`Sent to ${number} for agent ${agentId} via Green API`);
   return { messageId: data.idMessage, timestamp: new Date().toISOString() };
@@ -269,7 +278,14 @@ async function sendPoll(agentId, number, question, options, quotedMessageId = nu
   );
 
   const data = await res.json();
-  if (!res.ok) throw new Error(`Green API sendPoll error: ${JSON.stringify(data)}`);
+  if (!res.ok) {
+    const errMsg = `Green API sendPoll error: ${JSON.stringify(data)}`;
+    if (res.status === 401 || /unauthorized|not.?authorized/i.test(JSON.stringify(data))) {
+      await updateSupabaseStatus(agentId, 'disconnected');
+      console.warn(`[sessionManager] Agent ${agentId} marked disconnected -- sendPoll got unauthorized from Green API`);
+    }
+    throw new Error(errMsg);
+  }
 
   console.log(`Poll sent to ${number} for agent ${agentId}`);
   return { messageId: data.idMessage, timestamp: new Date().toISOString() };
@@ -289,7 +305,7 @@ async function disconnectSession(agentId) {
 }
 
 async function restoreAllSessions() {
-  console.log('Green API sessions are managed on Green API servers — no local restore needed');
+  console.log('Green API sessions are managed on Green API servers -- no local restore needed');
 }
 
 module.exports = { createSession, getStatus, getQR, sendMessage, sendPoll, disconnectSession, restoreAllSessions };

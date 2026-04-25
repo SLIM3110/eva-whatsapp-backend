@@ -81,10 +81,13 @@ async function generateReply(originalMessage, leadReply, agentFirstName, geminiK
   }
 }
 
+// ── Intent detection ──────────────────────────────────────────────────────────
+
 const STOP_PATTERNS = [/\bstop\b/i, /\bunsubscribe\b/i, /\bremove\b/i, /\bopt.?out\b/i,
-                       /\bnot interested\b/i, /\bno thanks\b/i, /\bno thank you\b/i];
-const RENT_PATTERNS = [/\brent\b/i, /^1$/];
-const SELL_PATTERNS = [/\bsell\b/i, /\bsale\b/i, /^2$/];
+                       /\bnot interested\b/i, /\bno thanks\b/i, /\bno thank you\b/i,
+                       /\bلا شكرا\b/i, /\bلا يهمني\b/i];
+const RENT_PATTERNS = [/\brent\b/i, /\bإيجار\b/i, /^1$/, /^١$/];
+const SELL_PATTERNS = [/\bsell\b/i, /\bsale\b/i, /^2$/, /^٢$/];
 
 function detectIntent(text) {
   const t = (text || '').trim();
@@ -94,224 +97,20 @@ function detectIntent(text) {
   return 'conversation';
 }
 
-// ── Button reply handler ──────────────────────────────────────────────────────
-// Handles `buttonsResponseMessage` webhook events from Green API.
-// Triggered when a recipient taps one of the reply buttons.
-
-<<<<<<< Updated upstream
-async function handleButtonReply(payload, fromNumber, contact) {
-  var btnData = payload && payload.messageData && payload.messageData.buttonsResponseMessage
-    ? payload.messageData.buttonsResponseMessage : null;
-  if (!btnData) return;
-
-  // Green API sends selectedButtonId and selectedButtonText
-  var buttonId   = (btnData.selectedButtonId   || '').toLowerCase();
-  var buttonText = (btnData.selectedButtonText || '').toLowerCase();
-  console.log('[webhook/btn] ' + fromNumber + ' tapped: "' + buttonId + '" / "' + buttonText + '"');
-
-  var newStatus;
-  if (buttonId === 'btn_rent'   || buttonText.includes('rent')) {
-    newStatus = 'interested_rent';
-  } else if (buttonId === 'btn_sell' || buttonText.includes('sell')) {
-    newStatus = 'interested_sell';
-  } else if (buttonId === 'btn_not_interested' || buttonText.includes('not interested')) {
-    newStatus = 'opted_out';
-  } else {
-    // Unknown button -- treat as a general reply
-    newStatus = 'replied';
-  }
-
-  var now           = new Date().toISOString();
-  var newReplyCount = ((contact.reply_count) || 0) + 1;
-
-  await supabaseFetch('/owner_contacts?id=eq.' + contact.id, {
-    method: 'PATCH', headers: { 'Prefer': 'return=minimal' },
-    body: JSON.stringify({ message_status: newStatus, reply_count: newReplyCount, replied_at: now })
-  });
-
-  var agentRes     = await supabaseFetch('/profiles?id=eq.' + contact.assigned_agent +
-    '&select=first_name,green_api_url,green_api_instance_id,green_api_token');
-  var agentRows    = await agentRes.json();
-  var agentProfile = agentRows[0];
-  if (!agentProfile || !agentProfile.green_api_instance_id) return;
-
-  if (newStatus === 'opted_out') {
-    await sendViaGreenApi(agentProfile, fromNumber,
-      'No problem at all -- you have been removed and will not hear from us again. Have a great day!');
-    console.log('[webhook/btn] ' + fromNumber + ' opted out via button');
-    return;
-  }
-
-  // Rent or sell -- generate a contextual follow-up via Gemini
-  var settingsRes  = await supabaseFetch('/api_settings?id=eq.1&select=gemini_api_key');
-  var settingsRows = await settingsRes.json();
-  var geminiKey    = settingsRows[0] && settingsRows[0].gemini_api_key ? settingsRows[0].gemini_api_key : '';
-
-  var intent     = newStatus === 'interested_rent' ? 'rent' : 'sell';
-  var votedLabel = intent === 'rent' ? 'rent it out' : 'sell it';
-  var replyText  = geminiKey
-    ? await generateReply(contact.generated_message, 'I want to ' + votedLabel, agentProfile.first_name, geminiKey)
-    : null;
-  var fallback = intent === 'rent'
-    ? 'Thanks for letting me know! I would love to help you get it rented. When would be a good time for a quick 5-minute call?'
-    : 'The market is strong right now. Can we jump on a quick call this week? I can walk you through what your unit could realistically achieve.';
-
-  await sendViaGreenApi(agentProfile, fromNumber, replyText || fallback);
-  console.log('[webhook/btn] Sent ' + intent + ' follow-up to ' + fromNumber);
-}
-
-// ── Poll vote handler (legacy -- handles votes on messages sent before the switch) ──
-// Kept for backward compatibility with any poll messages already sent.
-
-
-
-async function handleTextReply(fromNumber, messageText, contact) {
-  var intent        = detectIntent(messageText);
-  var now           = new Date().toISOString();
-  var newReplyCount = ((contact.reply_count) || 0) + 1;
-  console.log('[webhook/text] ' + fromNumber + ' replied -- intent: ' + intent);
-  var newStatus;
-  if (intent === 'stop')  newStatus = 'opted_out';
-  else if (intent === 'rent') newStatus = 'interested_rent';
-  else if (intent === 'sell') newStatus = 'interested_sell';
-  else                        newStatus = 'replied';
-
-  await supabaseFetch('/owner_contacts?id=eq.' + contact.id, {
-    method: 'PATCH', headers: { 'Prefer': 'return=minimal' },
-    body: JSON.stringify({ message_status: newStatus, reply_count: newReplyCount, replied_at: now })
-  });
-
-  var agentRes     = await supabaseFetch('/profiles?id=eq.' + contact.assigned_agent +
-    '&select=first_name,green_api_url,green_api_instance_id,green_api_token');
-  var agentRows    = await agentRes.json();
-  var agentProfile = agentRows[0];
-  if (!agentProfile || !agentProfile.green_api_instance_id) return;
-
-  if (intent === 'stop') {
-    await sendViaGreenApi(agentProfile, fromNumber,
-      'No problem -- you have been removed from our list and will not hear from us again. Have a great day!');
-    return;
-  }
-
-  var settingsRes  = await supabaseFetch('/api_settings?id=eq.1&select=gemini_api_key');
-  var settingsRows = await settingsRes.json();
-  var geminiKey    = settingsRows[0] && settingsRows[0].gemini_api_key ? settingsRows[0].gemini_api_key : '';
-  if (!geminiKey) return;
-
-  var replyText = await generateReply(contact.generated_message, messageText, agentProfile.first_name, geminiKey);
-  if (replyText) {
-    await sendViaGreenApi(agentProfile, fromNumber, replyText);
-    console.log('[webhook/text] Gemini reply sent to ' + fromNumber + ' (intent: ' + intent + ')');
-  }
-}
-
-// ── Incoming webhook route ────────────────────────────────────────────────────
-
-router.post('/incoming', async function(req, res) {
-  res.sendStatus(200);
-  try {
-    var payload = req.body;
-    if (payload.typeWebhook !== 'incomingMessageReceived') return;
-
-    var rawSender  = (payload.senderData && (payload.senderData.sender || payload.senderData.chatId)) || '';
-    var fromNumber = rawSender.replace('@c.us', '').replace(/\D/g, '');
-    if (!fromNumber) return;
-
-    var msgType       = (payload.messageData && payload.messageData.typeMessage) || '';
-    var isButtonReply = msgType === 'buttonsResponseMessage';
-
-    var messageText = (
-      (payload.messageData && payload.messageData.textMessageData && payload.messageData.textMessageData.textMessage) ||
-      (payload.messageData && payload.messageData.extendedTextMessageData && payload.messageData.extendedTextMessageData.text) ||
-      ''
-    ).trim();
-
-    var lookupRes = await supabaseFetch(
-      '/owner_contacts?number_1=eq.' + encodeURIComponent(fromNumber) +
-      '&message_status=in.(sent,replied,interested_rent,interested_sell)&order=sent_at.desc&limit=1' +
-      '&select=id,reply_count,generated_message,assigned_agent,building_name'
-    );
-    var contacts = await lookupRes.json();
-    var contact  = Array.isArray(contacts) && contacts.length > 0 ? contacts[0] : null;
-
-    await supabaseFetch('/incoming_messages', {
-      method: 'POST',
-      body: JSON.stringify({
-        contact_id:   contact ? contact.id : null,
-        from_number:  fromNumber,
-        message_text: isButtonReply ? '[BUTTON REPLY] ' + msgType : messageText,
-        raw_payload:  payload,
-        matched:      !!contact,
-      }),
-    }).catch(function(e) { console.error('[webhook] Log error:', e.message); });
-
-    if (!contact) return;
-
-    if (isButtonReply)       await handleButtonReply(payload, fromNumber, contact);
-    else if (messageText) await handleTextReply(fromNumber, messageText, contact);
-=======
-Write a short (2–4 sentence), warm, natural follow-up reply that:
-- Acknowledges specifically what they said
-- Moves the conversation forward (suggest a quick call or ask one relevant question)
-- Sounds like a real person, not a bot — conversational, not formal
-- Does NOT use hollow phrases like "Great to hear from you!" or "I hope this finds you well"
-
-Return only the reply text, no commentary.`;
-
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
-      {
-        method:  'POST',
-        signal:  controller.signal,
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({
-          contents:         [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 1.0 },
-        }),
-      }
-    );
-    clearTimeout(timeoutId);
-
-    if (!res.ok) { console.warn(`[webhook/Gemini] HTTP ${res.status}`); return null; }
-
-    const data = await res.json();
-    return data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || null;
-  } catch (e) {
-    console.warn('[webhook/Gemini] Error:', e.message);
-    return null;
-  }
-}
-
-// ── Intent detection (text replies) ──────────────────────────────────────────
-
-const STOP_PATTERNS = [
-  /\bstop\b/i, /\bunsubscribe\b/i, /\bremove\b/i, /\bopt.?out\b/i,
-  /\bnot interested\b/i, /\bno thanks\b/i, /\bno thank you\b/i,
-  /\bلا شكرا\b/i, /\bلا يهمني\b/i,
-];
-const RENT_PATTERNS = [/\brent\b/i, /\bإيجار\b/i, /^1$/, /^١$/];
-const SELL_PATTERNS = [/\bsell\b/i, /\bsale\b/i, /^2$/, /^٢$/];
-
-function detectIntent(text) {
-  const t = (text || '').trim();
-  if (STOP_PATTERNS.some(r => r.test(t))) return 'stop';
-  if (RENT_PATTERNS.some(r => r.test(t)))  return 'rent';
-  if (SELL_PATTERNS.some(r => r.test(t)))  return 'sell';
-  return 'conversation';
-}
-
 // ── Poll vote parser ──────────────────────────────────────────────────────────
 // Green API delivers poll votes as typeMessage: "pollUpdateMessage".
 // The votes array lists each option and which chatIds selected it.
 
 function parsePollVote(payload, fromNumber) {
-  const pollData = payload?.messageData?.pollMessageData;
+  const pollData = payload && payload.messageData && payload.messageData.pollMessageData
+    ? payload.messageData.pollMessageData : null;
   if (!pollData) return null;
 
-  const voterChatId = `${fromNumber}@c.us`;
-  for (const vote of (pollData.votes || [])) {
+  const voterChatId = fromNumber + '@c.us';
+  const votes = pollData.votes || [];
+  for (const vote of votes) {
     const voters = vote.optionVoters || [];
-    if (voters.some(v => v === voterChatId || v.replace('@c.us', '') === fromNumber)) {
+    if (voters.some(function(v) { return v === voterChatId || v.replace('@c.us', '') === fromNumber; })) {
       return (vote.optionName || '').toLowerCase();
     }
   }
@@ -324,89 +123,78 @@ async function handlePollVote(payload, fromNumber, contact) {
   const votedOption = parsePollVote(payload, fromNumber);
   if (!votedOption) return;
 
-  console.log(`[webhook/poll] ${fromNumber} voted: "${votedOption}"`);
+  console.log('[webhook/poll] ' + fromNumber + ' voted: "' + votedOption + '"');
 
   const now           = new Date().toISOString();
   const newReplyCount = ((contact.reply_count) || 0) + 1;
 
-  // Map the voted option text to a status
   let newStatus;
-  if (votedOption.includes('rent'))                                    newStatus = 'interested_rent';
-  else if (votedOption.includes('sell'))                               newStatus = 'interested_sell';
+  if (votedOption.includes('rent'))                                                         newStatus = 'interested_rent';
+  else if (votedOption.includes('sell'))                                                    newStatus = 'interested_sell';
   else if (votedOption.includes('market') || votedOption.includes('data') || votedOption.includes('report')) newStatus = 'wants_report';
-  else                                                                  newStatus = 'opted_out'; // "remove me"
+  else                                                                                      newStatus = 'opted_out';
 
-  await supabaseFetch(`/owner_contacts?id=eq.${contact.id}`, {
+  await supabaseFetch('/owner_contacts?id=eq.' + contact.id, {
     method:  'PATCH',
     headers: { 'Prefer': 'return=minimal' },
     body:    JSON.stringify({ message_status: newStatus, reply_count: newReplyCount, replied_at: now }),
   });
 
-  // Fetch agent credentials
   const agentRes = await supabaseFetch(
-    `/profiles?id=eq.${contact.assigned_agent}&select=first_name,green_api_url,green_api_instance_id,green_api_token`
+    '/profiles?id=eq.' + contact.assigned_agent + '&select=first_name,green_api_url,green_api_instance_id,green_api_token'
   );
-  const [agentProfile] = await agentRes.json();
-  if (!agentProfile?.green_api_instance_id) return;
+  const agentRows    = await agentRes.json();
+  const agentProfile = agentRows[0];
+  if (!agentProfile || !agentProfile.green_api_instance_id) return;
 
-  // Opted out via poll — send confirmation and stop
   if (newStatus === 'opted_out') {
-    await sendViaGreenApi(
-      agentProfile, fromNumber,
-      `No problem at all — you've been removed and won't hear from us again. Have a great day! 👋`
-    );
-    console.log(`[webhook/poll] ${fromNumber} opted out via poll`);
+    await sendViaGreenApi(agentProfile, fromNumber,
+      "No problem at all — you've been removed and won't hear from us again. Have a great day! 👋");
+    console.log('[webhook/poll] ' + fromNumber + ' opted out via poll');
     return;
   }
 
-  // ── Wants market report ───────────────────────────────────────────────────
   if (newStatus === 'wants_report') {
-    // Look up the most recent market report for this contact's building
-    const building     = encodeURIComponent(contact.building_name || '');
-    const reportRes    = await supabaseFetch(
-      `/market_reports?community_name=ilike.*${building}*&order=created_at.desc&limit=1&select=report_url,file_url,community_name`
-    ).catch(() => null);
+    const building  = encodeURIComponent(contact.building_name || '');
+    const reportRes = await supabaseFetch(
+      '/market_reports?community_name=ilike.*' + building + '*&order=created_at.desc&limit=1&select=report_url,file_url,community_name'
+    ).catch(function() { return null; });
 
     const reports      = reportRes ? await reportRes.json() : [];
     const latestReport = Array.isArray(reports) && reports.length > 0 ? reports[0] : null;
-    // Support both report_url (new) and file_url (legacy column name)
-    const reportLink   = latestReport?.report_url || latestReport?.file_url;
+    const reportLink   = latestReport && (latestReport.report_url || latestReport.file_url);
 
     if (reportLink) {
-      await sendViaGreenApi(
-        agentProfile, fromNumber,
-        `Here's the latest market report for ${latestReport.community_name} — it covers recent transaction data, price trends, and rental yields:\n\n${reportLink}\n\nHappy to walk you through it or answer any questions!`
-      );
-      console.log(`[webhook/poll] Market report sent to ${fromNumber}`);
+      await sendViaGreenApi(agentProfile, fromNumber,
+        "Here's the latest market report for " + latestReport.community_name +
+        " — it covers recent transaction data, price trends, and rental yields:\n\n" + reportLink +
+        "\n\nHappy to walk you through it or answer any questions!");
+      console.log('[webhook/poll] Market report sent to ' + fromNumber);
     } else {
-      // No report exists yet — acknowledge and flag for manual follow-up
-      await sendViaGreenApi(
-        agentProfile, fromNumber,
-        `I'll put together a detailed market report for your building and send it to you shortly. Watch this space! 📊`
-      );
-      console.log(`[webhook/poll] No report found for building "${contact.building_name}" — flagged for manual follow-up`);
+      await sendViaGreenApi(agentProfile, fromNumber,
+        "I'll put together a detailed market report for your building and send it to you shortly. Watch this space! 📊");
+      console.log('[webhook/poll] No report found for "' + contact.building_name + '" — flagged for manual follow-up');
     }
     return;
   }
 
-  // ── Rent or sell — Gemini personalised follow-up ──────────────────────────
-  const settingsRes = await supabaseFetch(`/api_settings?id=eq.1&select=gemini_api_key`);
-  const [settings]  = await settingsRes.json();
-  const geminiKey   = settings?.gemini_api_key || '';
+  const settingsRes = await supabaseFetch('/api_settings?id=eq.1&select=gemini_api_key');
+  const settingsRows = await settingsRes.json();
+  const geminiKey   = settingsRows[0] && settingsRows[0].gemini_api_key ? settingsRows[0].gemini_api_key : '';
 
-  const intent      = newStatus === 'interested_rent' ? 'rent' : 'sell';
-  const votedLabel  = intent === 'rent' ? 'rent it out' : 'sell it';
+  const intent     = newStatus === 'interested_rent' ? 'rent' : 'sell';
+  const votedLabel = intent === 'rent' ? 'rent it out' : 'sell it';
 
   const replyText = geminiKey
-    ? await generateReply(contact.generated_message, `I want to ${votedLabel}`, agentProfile.first_name, geminiKey)
+    ? await generateReply(contact.generated_message, 'I want to ' + votedLabel, agentProfile.first_name, geminiKey)
     : null;
 
   const fallback = intent === 'rent'
-    ? `Thanks for letting me know! I'd love to help you get it rented. When would be a good time for a quick 5-minute call?`
-    : `Great — the market is strong right now. Can we jump on a quick call this week? I can walk you through what your unit could realistically achieve.`;
+    ? "Thanks for letting me know! I'd love to help you get it rented. When would be a good time for a quick 5-minute call?"
+    : "Great — the market is strong right now. Can we jump on a quick call this week? I can walk you through what your unit could realistically achieve.";
 
   await sendViaGreenApi(agentProfile, fromNumber, replyText || fallback);
-  console.log(`[webhook/poll] Sent ${intent} follow-up to ${fromNumber}`);
+  console.log('[webhook/poll] Sent ' + intent + ' follow-up to ' + fromNumber);
 }
 
 // ── Plain text reply handler ──────────────────────────────────────────────────
@@ -416,115 +204,151 @@ async function handleTextReply(fromNumber, messageText, contact) {
   const now           = new Date().toISOString();
   const newReplyCount = ((contact.reply_count) || 0) + 1;
 
-  console.log(`[webhook/text] ${fromNumber} replied — intent: ${intent}`);
+  console.log('[webhook/text] ' + fromNumber + ' replied — intent: ' + intent);
 
   let newStatus;
-  switch (intent) {
-    case 'stop': newStatus = 'opted_out';       break;
-    case 'rent': newStatus = 'interested_rent'; break;
-    case 'sell': newStatus = 'interested_sell'; break;
-    default:     newStatus = 'replied';         break;
-  }
+  if (intent === 'stop')       newStatus = 'opted_out';
+  else if (intent === 'rent')  newStatus = 'interested_rent';
+  else if (intent === 'sell')  newStatus = 'interested_sell';
+  else                         newStatus = 'replied';
 
-  await supabaseFetch(`/owner_contacts?id=eq.${contact.id}`, {
+  await supabaseFetch('/owner_contacts?id=eq.' + contact.id, {
     method:  'PATCH',
     headers: { 'Prefer': 'return=minimal' },
     body:    JSON.stringify({ message_status: newStatus, reply_count: newReplyCount, replied_at: now }),
   });
 
   const agentRes = await supabaseFetch(
-    `/profiles?id=eq.${contact.assigned_agent}&select=first_name,green_api_url,green_api_instance_id,green_api_token`
+    '/profiles?id=eq.' + contact.assigned_agent + '&select=first_name,green_api_url,green_api_instance_id,green_api_token'
   );
-  const [agentProfile] = await agentRes.json();
-  if (!agentProfile?.green_api_instance_id) return;
+  const agentRows    = await agentRes.json();
+  const agentProfile = agentRows[0];
+  if (!agentProfile || !agentProfile.green_api_instance_id) return;
 
   if (intent === 'stop') {
-    await sendViaGreenApi(
-      agentProfile, fromNumber,
-      `No problem — you've been removed from our list and won't hear from us again. Have a great day!`
-    );
+    await sendViaGreenApi(agentProfile, fromNumber,
+      "No problem — you've been removed from our list and won't hear from us again. Have a great day!");
     return;
   }
 
-  // Gemini follow-up for rent/sell/conversation
-  const settingsRes = await supabaseFetch(`/api_settings?id=eq.1&select=gemini_api_key`);
-  const [settings]  = await settingsRes.json();
-  const geminiKey   = settings?.gemini_api_key || '';
+  const settingsRes  = await supabaseFetch('/api_settings?id=eq.1&select=gemini_api_key');
+  const settingsRows = await settingsRes.json();
+  const geminiKey    = settingsRows[0] && settingsRows[0].gemini_api_key ? settingsRows[0].gemini_api_key : '';
+  if (!geminiKey) return;
 
-  if (!geminiKey) return; // No key — leave for human agent to handle
-
-  const replyText = await generateReply(
-    contact.generated_message, messageText, agentProfile.first_name, geminiKey
-  );
-
+  const replyText = await generateReply(contact.generated_message, messageText, agentProfile.first_name, geminiKey);
   if (replyText) {
     await sendViaGreenApi(agentProfile, fromNumber, replyText);
-    console.log(`[webhook/text] Gemini reply sent to ${fromNumber} (intent: ${intent})`);
+    console.log('[webhook/text] Gemini reply sent to ' + fromNumber + ' (intent: ' + intent + ')');
   }
 }
 
-// ── Main incoming webhook ─────────────────────────────────────────────────────
+// ── stateInstanceChanged handler ──────────────────────────────────────────────
+// Green API sends this when an instance's WhatsApp authorization changes.
+// We update the agent's status in Supabase immediately so the dashboard
+// reflects the true state rather than waiting for the next health check.
 
-router.post('/incoming', async (req, res) => {
+async function handleStateInstanceChanged(payload) {
+  const instanceId = payload.instanceData && String(payload.instanceData.idInstance);
+  const newState   = payload.stateInstance; // 'authorized', 'notAuthorized', 'blocked', etc.
+
+  if (!instanceId || !newState) return;
+
+  const newStatus = newState === 'authorized' ? 'connected' : 'disconnected';
+
+  try {
+    const res = await supabaseFetch(
+      '/profiles?green_api_instance_id=eq.' + encodeURIComponent(instanceId) + '&select=id,first_name'
+    );
+    const rows = await res.json();
+    if (!rows || !rows.length) {
+      console.log('[webhook/state] No agent found for instance ' + instanceId);
+      return;
+    }
+    const agent = rows[0];
+    await supabaseFetch('/profiles?id=eq.' + agent.id, {
+      method:  'PATCH',
+      headers: { 'Prefer': 'return=minimal' },
+      body:    JSON.stringify({ whatsapp_session_status: newStatus }),
+    });
+    console.log('[webhook/state] Agent ' + (agent.first_name || agent.id) +
+      ' (instance ' + instanceId + ') → ' + newState + ' → status=' + newStatus);
+  } catch (e) {
+    console.error('[webhook/state] Error updating status for instance ' + instanceId + ':', e.message);
+  }
+}
+
+// ── Main incoming webhook route ───────────────────────────────────────────────
+
+router.post('/incoming', async function(req, res) {
   res.sendStatus(200); // Always respond immediately — Green API retries on non-200
 
   try {
     const payload = req.body;
+
+    // ── Real-time instance state changes ─────────────────────────────────────
+    if (payload.typeWebhook === 'stateInstanceChanged') {
+      await handleStateInstanceChanged(payload);
+      return;
+    }
+
     if (payload.typeWebhook !== 'incomingMessageReceived') return;
 
-    const rawSender   = payload?.senderData?.sender || payload?.senderData?.chatId || '';
-    const isGroupMsg  = rawSender.endsWith('@g.us');
+    const rawSender  = (payload.senderData && (payload.senderData.sender || payload.senderData.chatId)) || '';
+    const isGroupMsg = rawSender.endsWith('@g.us');
 
     // ── Elvi group collector — silently capture developer group messages ───────
     if (isGroupMsg) {
       const { ingestGroupMessage } = require('../services/groupCollector');
-      const msgData = payload?.messageData || {};
+      const msgData = payload.messageData || {};
       const msg = {
-        idMessage:   payload?.idMessage,
+        idMessage:   payload.idMessage,
         type:        msgData.typeMessage,
-        textMessage: msgData.textMessageData?.textMessage || msgData.extendedTextMessageData?.text || '',
-        caption:     msgData.fileMessageData?.caption || msgData.imageMessageData?.caption || '',
-        fileName:    msgData.fileMessageData?.fileName || '',
-        timestamp:   payload?.timestamp,
+        textMessage: (msgData.textMessageData && msgData.textMessageData.textMessage) ||
+                     (msgData.extendedTextMessageData && msgData.extendedTextMessageData.text) || '',
+        caption:     (msgData.fileMessageData && msgData.fileMessageData.caption) ||
+                     (msgData.imageMessageData && msgData.imageMessageData.caption) || '',
+        fileName:    (msgData.fileMessageData && msgData.fileMessageData.fileName) || '',
+        timestamp:   payload.timestamp,
       };
-      // Fire-and-forget — never let group ingestion delay webhook response
-      ingestGroupMessage(rawSender, msg).catch(err =>
-        console.warn('[webhook/group] Elvi ingest error:', err.message)
-      );
-      return; // Group messages are for Elvi only — not the owner outreach flow
+      ingestGroupMessage(rawSender, msg).catch(function(err) {
+        console.warn('[webhook/group] Elvi ingest error:', err.message);
+      });
+      return;
     }
 
-    const fromNumber  = rawSender.replace('@c.us', '').replace(/\D/g, '');
+    const fromNumber = rawSender.replace('@c.us', '').replace(/\D/g, '');
     if (!fromNumber) return;
 
-    const msgType    = payload?.messageData?.typeMessage || '';
+    const msgType    = (payload.messageData && payload.messageData.typeMessage) || '';
     const isPollVote = msgType === 'pollUpdateMessage';
     const messageText = (
-      payload?.messageData?.textMessageData?.textMessage ||
-      payload?.messageData?.extendedTextMessageData?.text ||
+      (payload.messageData && payload.messageData.textMessageData && payload.messageData.textMessageData.textMessage) ||
+      (payload.messageData && payload.messageData.extendedTextMessageData && payload.messageData.extendedTextMessageData.text) ||
       ''
     ).trim();
 
-    // Look up matching sent contact for this number
     const lookupRes = await supabaseFetch(
-      `/owner_contacts?number_1=eq.${encodeURIComponent(fromNumber)}&message_status=in.(sent,replied,interested_rent,interested_sell)&order=sent_at.desc&limit=1&select=id,reply_count,generated_message,assigned_agent`
+      '/owner_contacts?number_1=eq.' + encodeURIComponent(fromNumber) +
+      '&message_status=in.(sent,replied,interested_rent,interested_sell)' +
+      '&order=sent_at.desc&limit=1' +
+      '&select=id,reply_count,generated_message,assigned_agent,building_name'
     );
-    const contacts  = await lookupRes.json();
-    const contact   = Array.isArray(contacts) && contacts.length > 0 ? contacts[0] : null;
+    const contacts = await lookupRes.json();
+    const contact  = Array.isArray(contacts) && contacts.length > 0 ? contacts[0] : null;
 
-    // Log every incoming event
     await supabaseFetch('/incoming_messages', {
       method: 'POST',
       body: JSON.stringify({
-        contact_id:   contact?.id || null,
+        contact_id:   contact ? contact.id : null,
         from_number:  fromNumber,
-        message_text: isPollVote ? `[POLL VOTE] ${msgType}` : messageText,
+        message_text: isPollVote ? '[POLL VOTE] ' + msgType : messageText,
         raw_payload:  payload,
         matched:      !!contact,
       }),
-    }).catch(e => console.error('[webhook] Log error:', e.message));
+    }).catch(function(e) { console.error('[webhook] Log error:', e.message); });
 
-    if (!contact) return; // Unmatched — logged only
+    if (!contact) return;
 
     if (isPollVote) {
       await handlePollVote(payload, fromNumber, contact);
@@ -532,7 +356,6 @@ router.post('/incoming', async (req, res) => {
       await handleTextReply(fromNumber, messageText, contact);
     }
 
->>>>>>> Stashed changes
   } catch (err) {
     console.error('[webhook] Unhandled error:', err.message);
   }
