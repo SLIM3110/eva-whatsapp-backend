@@ -18,7 +18,13 @@ const ANTHROPIC_KEY  = process.env.ANTHROPIC_API_KEY;
 
 const CHUNK_SIZE     = 1500;   // chars per chunk (~375 tokens)
 const CHUNK_OVERLAP  = 200;    // overlap between chunks to preserve context
-const EMBED_MODEL    = 'text-embedding-004';
+// Gemini retired text-embedding-004 from v1beta — every embed call started
+// returning 404. gemini-embedding-001 is the current canonical model.
+// outputDimensionality is pinned to 768 to match the existing pgvector
+// column width (created for text-embedding-004); changing this would
+// require re-ingesting every stored chunk.
+const EMBED_MODEL    = 'gemini-embedding-001';
+const EMBED_DIM      = 768;
 const CLAUDE_MODEL   = 'claude-sonnet-4-6';
 const MAX_CONTEXT_CHUNKS = 8;  // chunks sent to Claude per query
 
@@ -165,8 +171,9 @@ async function generateEmbedding(text) {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({
-        model:   `models/${EMBED_MODEL}`,
-        content: { parts: [{ text }] },
+        model:                `models/${EMBED_MODEL}`,
+        content:              { parts: [{ text }] },
+        outputDimensionality: EMBED_DIM,
       }),
     }
   );
