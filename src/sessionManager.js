@@ -109,12 +109,10 @@ async function getStatus(agentId) {
     const data = await res.json();
 
     if (data.stateInstance === 'authorized') {
-      const wasConnected = statuses.get(agentId) === 'connected';
       statuses.set(agentId, 'connected');
       await updateSupabaseStatus(agentId, 'connected');
-      if (!wasConnected) {
-        await registerWebhook(creds.apiUrl, creds.idInstance, creds.apiTokenInstance);
-      }
+      // NOTE: do NOT call registerWebhook here — setSettings reboots the instance
+      // and disconnects all agents. Webhook is registered once at createSession only.
       return { status: 'connected', qrCode: null };
     }
 
