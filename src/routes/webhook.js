@@ -83,17 +83,20 @@ async function generateReply(originalMessage, leadReply, agentFirstName, geminiK
 
 // ── Intent detection ──────────────────────────────────────────────────────────
 
-const STOP_PATTERNS = [/\bstop\b/i, /\bunsubscribe\b/i, /\bremove\b/i, /\bopt.?out\b/i,
-                       /\bnot interested\b/i, /\bno thanks\b/i, /\bno thank you\b/i,
-                       /\bلا شكرا\b/i, /\bلا يهمني\b/i];
-const RENT_PATTERNS = [/\brent\b/i, /\bإيجار\b/i, /^1$/, /^١$/];
-const SELL_PATTERNS = [/\bsell\b/i, /\bsale\b/i, /^2$/, /^٢$/];
+const STOP_PATTERNS   = [/\bstop\b/i, /\bunsubscribe\b/i, /\bremove\b/i, /\bopt.?out\b/i,
+                         /\bnot interested\b/i, /\bno thanks\b/i, /\bno thank you\b/i,
+                         /\bلا شكرا\b/i, /\bلا يهمني\b/i];
+const RENT_PATTERNS   = [/\brent\b/i, /\bإيجار\b/i, /^1$/, /^١$/];
+const SELL_PATTERNS   = [/\bsell\b/i, /\bsale\b/i, /^2$/, /^٢$/];
+const MARKET_PATTERNS = [/\bmarket\b/i, /\breport\b/i, /\bmarket data\b/i, /\bmarket update\b/i,
+                         /^4$/, /^٤$/, /\bتقرير\b/i];
 
 function detectIntent(text) {
   const t = (text || '').trim();
-  if (STOP_PATTERNS.some(function(r) { return r.test(t); })) return 'stop';
-  if (RENT_PATTERNS.some(function(r) { return r.test(t); })) return 'rent';
-  if (SELL_PATTERNS.some(function(r) { return r.test(t); })) return 'sell';
+  if (STOP_PATTERNS.some(function(r) { return r.test(t); }))   return 'stop';
+  if (MARKET_PATTERNS.some(function(r) { return r.test(t); })) return 'market';
+  if (RENT_PATTERNS.some(function(r) { return r.test(t); }))   return 'rent';
+  if (SELL_PATTERNS.some(function(r) { return r.test(t); }))   return 'sell';
   return 'conversation';
 }
 
@@ -155,26 +158,12 @@ async function handlePollVote(payload, fromNumber, contact) {
   }
 
   if (newStatus === 'wants_report') {
-    const building  = encodeURIComponent(contact.building_name || '');
-    const reportRes = await supabaseFetch(
-      '/market_reports?community_name=ilike.*' + building + '*&order=created_at.desc&limit=1&select=report_url,file_url,community_name'
-    ).catch(function() { return null; });
-
-    const reports      = reportRes ? await reportRes.json() : [];
-    const latestReport = Array.isArray(reports) && reports.length > 0 ? reports[0] : null;
-    const reportLink   = latestReport && (latestReport.report_url || latestReport.file_url);
-
-    if (reportLink) {
-      await sendViaGreenApi(agentProfile, fromNumber,
-        "Here's the latest market report for " + latestReport.community_name +
-        " — it covers recent transaction data, price trends, and rental yields:\n\n" + reportLink +
-        "\n\nHappy to walk you through it or answer any questions!");
-      console.log('[webhook/poll] Market report sent to ' + fromNumber);
-    } else {
-      await sendViaGreenApi(agentProfile, fromNumber,
-        "I'll put together a detailed market report for your building and send it to you shortly. Watch this space! 📊");
-      console.log('[webhook/poll] No report found for "' + contact.building_name + '" — flagged for manual follow-up');
-    }
+    // Don't auto-send a report — flag the contact and let the agent build/send
+    // the report manually from the Intelligence Hub. The dashboard surfaces
+    // 'wants_report' so the agent sees the request.
+    await sendViaGreenApi(agentProfile, fromNumber,
+      "I'll put together a detailed market report for your building and send it to you shortly. Watch this space!");
+    console.log('[webhook/poll] ' + fromNumber + ' wants market report for "' + (contact.building_name || 'unknown') + '" — flagged for agent follow-up');
     return;
   }
 
@@ -207,10 +196,11 @@ async function handleTextReply(fromNumber, messageText, contact) {
   console.log('[webhook/text] ' + fromNumber + ' replied — intent: ' + intent);
 
   let newStatus;
-  if (intent === 'stop')       newStatus = 'opted_out';
-  else if (intent === 'rent')  newStatus = 'interested_rent';
-  else if (intent === 'sell')  newStatus = 'interested_sell';
-  else                         newStatus = 'replied';
+  if (intent === 'stop')        newStatus = 'opted_out';
+  else if (intent === 'market') newStatus = 'wants_report';
+  else if (intent === 'rent')   newStatus = 'interested_rent';
+  else if (intent === 'sell')   newStatus = 'interested_sell';
+  else                          newStatus = 'replied';
 
   await supabaseFetch('/owner_contacts?id=eq.' + contact.id, {
     method:  'PATCH',
@@ -228,6 +218,13 @@ async function handleTextReply(fromNumber, messageText, contact) {
   if (intent === 'stop') {
     await sendViaGreenApi(agentProfile, fromNumber,
       "No problem — you've been removed from our list and won't hear from us again. Have a great day!");
+    return;
+  }
+
+  if (intent === 'market') {
+    await sendViaGreenApi(agentProfile, fromNumber,
+      "I'll put together a detailed market report for your building and send it to you shortly. Watch this space!");
+    console.log('[webhook/text] ' + fromNumber + ' wants market report for "' + (contact.building_name || 'unknown') + '" — flagged for agent follow-up');
     return;
   }
 
