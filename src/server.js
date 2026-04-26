@@ -21,13 +21,14 @@ app.use('/api/message', require('./routes/message'));
 app.use('/webhook', require('./routes/webhook'));
 app.use('/api/market-reports', require('./routes/marketReports'));
 app.use('/api/elvi', require('./routes/elvi'));
+app.use('/api/email', require('./routes/emailCampaigns'));
 
 process.on('uncaughtException', (err) => console.error('Uncaught exception:', err));
 process.on('unhandledRejection', (err) => console.error('Unhandled rejection:', err));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
-  console.log(`EVA WhatsApp Backend running on port ${PORT}`);
+  console.log('EVA WhatsApp Backend running on port ' + PORT);
   await restoreAllSessions();
   startScheduler();
 });
