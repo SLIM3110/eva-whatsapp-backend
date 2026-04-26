@@ -1016,7 +1016,9 @@ def page_executive_summary(data):
         (data.get('avg_yield','6.8%'),          'AVG RENTAL YIELD',     ''),
     ]))
     els.append(Spacer(1, 4*mm))
-    els.append(Paragraph(narrative_executive_overview(data), S('body')))
+    els.append(Paragraph(
+        data.get('metrics_narrative') or narrative_executive_overview(data),
+        S('body')))
     els.append(Spacer(1, 5*mm))
     els.append(Paragraph('Performance at a Glance', S('h2')))
     highlights = data.get('highlights', [
@@ -1049,7 +1051,9 @@ def page_transaction_analysis(data):
 
     els.append(fig_img(bar_chart(months, vol, 'Monthly Transaction Volume', 'No. Transactions'), PAGE_W-36*mm))
     els.append(Spacer(1, 3*mm))
-    els.append(Paragraph(narrative_volume_trend(months, vol), S('body')))
+    els.append(Paragraph(
+        data.get('volume_narrative') or narrative_volume_trend(months, vol),
+        S('body')))
     els.append(Spacer(1, 6*mm))
     # Dual Y-axis: PSF lives in low thousands, avg price in millions —
     # plotting them on a shared axis (the old approach) made the price
@@ -1061,7 +1065,9 @@ def page_transaction_analysis(data):
                         'Price Per Sqft & Average Sale Price Trend'),
         PAGE_W-36*mm))
     els.append(Spacer(1, 3*mm))
-    els.append(Paragraph(narrative_price_trend(prices, psf), S('body')))
+    els.append(Paragraph(
+        data.get('price_narrative') or narrative_price_trend(prices, psf),
+        S('body')))
     els.append(Spacer(1, 3*mm))
 
     if 'prop_type_data' in data:
@@ -1243,7 +1249,9 @@ def page_market_outlook(data):
     bt.setStyle(TableStyle([('LEFTPADDING',(0,0),(-1,-1),3),('RIGHTPADDING',(0,0),(-1,-1),3)]))
     els.append(bt)
     els.append(Spacer(1, 4*mm))
-    els.append(Paragraph(narrative_market_outlook(data), S('body')))
+    els.append(Paragraph(
+        data.get('market_outlook_narrative') or narrative_market_outlook(data),
+        S('body')))
     els.append(Spacer(1, 5*mm))
 
     outlook_items = data.get('outlook_items', [

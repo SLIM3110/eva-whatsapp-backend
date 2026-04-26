@@ -153,39 +153,82 @@ async function processJob(job) {
           : null,
       ].filter(Boolean).join('\n\n');
 
-      const promptText =
-        'You are a senior Dubai real estate analyst writing content for a professional PDF investor report by EVA Real Estate LLC.\n\n' +
-        'KEY MARKET DATA (from DLD / Property Monitor records):\n' + metricsLines + '\n' +
-        (agentBlock ? '\nAGENT INSTRUCTIONS:\n' + agentBlock + '\n' : '') +
-        '\nReturn ONLY valid JSON, no markdown fences:\n' +
-        '{\n' +
-        '  "exec_summary": "100-120 word executive summary in plain English. Be specific about numbers. Explain what they mean for an investor. No jargon.",\n' +
-        '  "outlook_items": [\n' +
-        '    {"title": "What does the price trend tell us?", "body": "150-200 words on price momentum and 6-12 month outlook."},\n' +
-        '    {"title": "Will there be more supply?", "body": "150-200 words on supply dynamics and structural constraints."},\n' +
-        '    {"title": "What does this mean for rental income?", "body": "150-200 words covering gross yield, net return, AED rent growth, 3-5 year hold view."},\n' +
-        '    {"title": "The broader Dubai picture", "body": "150-200 words on Dubai macro tailwinds and risk factors."}\n' +
-        '  ]' + (imageBase64 && d.personalisation_prompt ? ',\n  "image_placement": "cover",\n  "image_caption": "1-sentence caption."' : '') + '\n' +
-        '}';
+      const community = d.primaryCommunity || (d.communities && d.communities[0]) || 'this Dubai community';
+
+      const promptText = [
+        'You are a senior Dubai real estate analyst writing a personalised market briefing for a property owner in ' + community + '.',
+        'Your audience is NOT an analyst. They own a property and want to understand WHAT is happening in their specific market and WHY, in plain language with concrete, named context — not generic statements.',
+        '',
+        'Use Google Search to ground every claim about the macro environment, infrastructure, regulation, or news in current, dated information. Reference specific developments where genuinely relevant to ' + community + ':',
+        '- Dubai 2040 Urban Master Plan zoning shifts and the named district this community sits in',
+        '- Population growth and Golden Visa programme expansions affecting buyer pools',
+        '- Tax-free status (no capital gains, no income tax) and AED-USD peg implications for foreign capital',
+        '- Transit and infrastructure under construction or planned: Metro Blue Line alignment and stations, Etihad Rail, road and bridge upgrades, named mobility projects within ~5km of this community',
+        '- Major nearby developments: Dubai Islands, Palm Jebel Ali, Expo City, Dubai South, and named master-developer launches relevant to this area',
+        '- Mortgage rate environment, CBUAE policy changes, recent stamp-duty or fee adjustments',
+        '- Buyer-demographic shifts (UAE residents, GCC, European, South Asian, Russian, Chinese flows) and how they specifically affect this community',
+        '- School catchments, retail and amenity build-out, employment hubs within commuting range',
+        '',
+        'KEY MARKET DATA for ' + community + ' (from DLD / Property Monitor):',
+        metricsLines,
+        agentBlock ? '\nAGENT INSTRUCTIONS:\n' + agentBlock : '',
+        '',
+        'Return ONLY valid JSON (no markdown fences, no commentary outside the JSON). Be specific, quantitative where possible, and tie every paragraph back to ' + community + ' rather than Dubai in general. Where you reference an infrastructure project, named development, or policy change, use its name.',
+        '{',
+        '  "exec_summary": "130-170 words. The big-picture briefing for this owner. Why is the market doing what it is doing right now in ' + community + '? Tie to at least two macro factors (visa/population, supply, infrastructure, capital flows). End with one forward-looking sentence covering 12-24 months.",',
+        '  "metrics_narrative": "70-110 words. Read the four headline numbers above (transactions, avg price, avg PSF, gross yield) together. Compare to Dubai-wide medians where useful. What story do they tell about ' + community + ' right now?",',
+        '  "volume_narrative": "70-110 words. Concrete reading of the monthly transaction volume trend. Is buyer activity rising / easing / stable, and what specifically is driving it? Reference a named factor (visa policy, schooling, transit project completion, developer launch nearby).",',
+        '  "price_narrative": "70-110 words. What is moving the price line in ' + community + '? Reference at least one concrete driver (supply constraint, transit project, school/amenity build-out, capital flow, policy change). Avoid generic appreciation language.",',
+        '  "market_outlook_narrative": "180-260 words. Read the four outlook indicators (Price Direction / Demand Level / Supply / Rental Outlook) for this owner. Reference at least two specific Dubai factors that affect ' + community + ' specifically — name them (e.g. specific Blue Line station, specific master-plan zoning change, specific developer pipeline, specific demographic flow). End with a clear practical takeaway: what should this owner do over the next 12 months — hold, list, refinance, or refurbish — and why.",',
+        '  "outlook_items": [',
+        '    {"title": "What does the price trend tell us?", "body": "150-200 words. ' + community + "'s position in the broader Dubai cycle. Be specific and quantitative.\"},",
+        '    {"title": "Will there be more supply?", "body": "150-200 words. The concrete supply pipeline situation for ' + community + ' — remaining plots, master-plan zoning, recent developer launches, completion timelines, named projects."},',
+        '    {"title": "What does this mean for rental income?", "body": "150-200 words. Tenant demand drivers tied to ' + community + ': school catchments, transit access, employer hubs, expat demographics."},',
+        '    {"title": "The broader Dubai picture", "body": "150-200 words. Macro tailwinds and risks: Golden Visa, population, GDP, mortgage rates, AED peg, geopolitical capital flows. How specifically do these reach ' + community + '?"}',
+        '  ]' + (imageBase64 && d.personalisation_prompt ? ',\n  "image_placement": "cover",\n  "image_caption": "1-sentence caption."' : ''),
+        '}'
+      ].join('\n');
 
       try {
         const parts = [{ text: promptText }];
         if (imageBase64 && d.personalisation_prompt) {
           parts.push({ inlineData: { mimeType: imageMimeType, data: imageBase64 } });
         }
+        // Gemini 2.5 Flash with Google Search grounding so the analyst can
+        // reference current Dubai infrastructure and policy news in the
+        // narrative — not just whatever was in its training cutoff.
         const gemRes = await fetch(
-          'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' + geminiKey,
+          'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' + geminiKey,
           {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ contents: [{ parts: parts }], generationConfig: { temperature: 0.8 } }),
+            body: JSON.stringify({
+              contents: [{ parts: parts }],
+              tools: [{ googleSearch: {} }],
+              generationConfig: { temperature: 0.7, maxOutputTokens: 8192 },
+            }),
           }
         );
         const gemJson = await gemRes.json();
         const rawText = ((gemJson && gemJson.candidates && gemJson.candidates[0] && gemJson.candidates[0].content && gemJson.candidates[0].content.parts && gemJson.candidates[0].content.parts[0] && gemJson.candidates[0].content.parts[0].text) || '')
           .trim()
           .replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim();
-        if (rawText) geminiData = JSON.parse(rawText);
+        if (rawText) {
+          try {
+            geminiData = JSON.parse(rawText);
+          } catch (parseErr) {
+            // Grounded responses sometimes include trailing citation text
+            // after the JSON object. Try to extract the first {...} block.
+            const start = rawText.indexOf('{');
+            const end   = rawText.lastIndexOf('}');
+            if (start !== -1 && end > start) {
+              try { geminiData = JSON.parse(rawText.slice(start, end + 1)); }
+              catch (e2) { console.warn('[Gemini] JSON extract failed: ' + e2.message); }
+            } else {
+              console.warn('[Gemini] JSON parse failed: ' + parseErr.message);
+            }
+          }
+        }
       } catch (e) {
         console.warn('[Gemini] Error — report will generate without AI narrative: ' + e.message);
       }
@@ -204,6 +247,10 @@ async function processJob(job) {
       custom_location_notes: d.custom_location_notes,
     }, analysisResult, {
       exec_summary: geminiData.exec_summary || '',
+      metrics_narrative: geminiData.metrics_narrative || '',
+      volume_narrative: geminiData.volume_narrative || '',
+      price_narrative: geminiData.price_narrative || '',
+      market_outlook_narrative: geminiData.market_outlook_narrative || '',
       outlook_items: geminiData.outlook_items || [],
     });
 
