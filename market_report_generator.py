@@ -209,6 +209,168 @@ def donut_chart(labels, values, title):
     return fig
 
 
+def dual_line_chart(labels, primary, secondary, title):
+    """Two series on separate Y-axes — left for primary, right for secondary.
+    Each tuple is (values, label, optional_unit_suffix). Use this when the two
+    series live on wildly different scales (e.g. PSF in the low thousands and
+    price in the millions) so neither line appears flat-near-zero."""
+    fig, ax1 = plt.subplots(figsize=(9.0, 3.6))
+
+    p_vals, p_label = primary[0], primary[1]
+    s_vals, s_label = secondary[0], secondary[1]
+
+    p_ok = p_vals and len(p_vals) == len(labels)
+    s_ok = s_vals and len(s_vals) == len(labels)
+
+    if not p_ok and not s_ok:
+        ax1.text(0.5, 0.5, 'No data available for this period',
+                 ha='center', va='center', fontsize=11, color='#6B6B6B',
+                 transform=ax1.transAxes)
+        ax1.set_title(title, fontsize=11, fontweight='bold', color='#1B4D3E', pad=10)
+        ax1.set_xticks([]); ax1.set_yticks([])
+        ax1.spines[['top','right','left','bottom']].set_visible(False)
+        ax1.set_facecolor('white'); fig.patch.set_alpha(0); fig.tight_layout()
+        return fig
+
+    if p_ok:
+        ax1.plot(labels, p_vals, color=EVA_PALETTE[0], linewidth=2.4,
+                 marker='o', markersize=5, markeredgecolor='white',
+                 markeredgewidth=1.0, label=p_label, zorder=3)
+        ax1.set_ylabel(p_label, fontsize=9, color=EVA_PALETTE[0])
+        ax1.tick_params(axis='y', labelcolor=EVA_PALETTE[0], labelsize=8.5)
+
+    ax2 = None
+    if s_ok:
+        ax2 = ax1.twinx()
+        ax2.plot(labels, s_vals, color=EVA_PALETTE[1], linewidth=2.4,
+                 marker='s', markersize=5, markeredgecolor='white',
+                 markeredgewidth=1.0, label=s_label, zorder=3)
+        ax2.set_ylabel(s_label, fontsize=9, color=EVA_PALETTE[1])
+        ax2.tick_params(axis='y', labelcolor=EVA_PALETTE[1], labelsize=8.5)
+        ax2.spines[['top']].set_visible(False)
+
+    ax1.set_title(title, fontsize=11, fontweight='bold', color='#1B4D3E', pad=10)
+    ax1.tick_params(axis='x', labelsize=8.5, colors='#6B6B6B')
+    ax1.spines[['top']].set_visible(False)
+    ax1.spines[['left','bottom']].set_color('#CFCFCF')
+    ax1.grid(axis='y', color='#EFEFEF', zorder=0, linewidth=0.6)
+    ax1.set_facecolor('white')
+
+    handles = []
+    if p_ok: handles.append(plt.Line2D([0],[0], color=EVA_PALETTE[0], linewidth=2.4, marker='o', label=p_label))
+    if s_ok: handles.append(plt.Line2D([0],[0], color=EVA_PALETTE[1], linewidth=2.4, marker='s', label=s_label))
+    if handles:
+        ax1.legend(handles=handles, fontsize=8.5, framealpha=0, loc='best')
+
+    fig.patch.set_alpha(0); fig.tight_layout()
+    return fig
+
+
+# ── Narrative helpers ──────────────────────────────────────────────────────
+# These produce data-driven plain-language commentary so non-analyst readers
+# (property owners) can understand what each chart actually means. They never
+# hit Gemini — deterministic templates only, so the report is reproducible.
+
+def narrative_executive_overview(data):
+    parts = []
+    community = data.get('community') or 'this community'
+    yoy = (data.get('yoy_growth') or '').strip()
+    total = (data.get('total_transactions') or '').strip()
+    yld = (data.get('avg_yield') or '').strip()
+    if yoy and yoy not in ('—', '+0.0%', '0.0%'):
+        sentiment = 'appreciation' if yoy.startswith('+') else (
+            'softness' if yoy.startswith('-') else 'movement')
+        parts.append(f'Prices in {community} have shown {yoy} year-on-year {sentiment}.')
+    if total and total != '0':
+        parts.append(
+            f'A total of {total} qualifying transactions were recorded in the most recent '
+            f'12-month window — a robust sample for trend analysis.')
+    if yld:
+        parts.append(
+            f'Gross rental yields averaged {yld}, which sets the income baseline before '
+            f'service charges and other operating costs.')
+    return ' '.join(parts) if parts else (
+        'The metrics above summarise the core market position for this community over the '
+        'most recent 12-month window. Detailed breakdowns by transaction trend, rental '
+        'performance, and forward outlook follow in the sections below.')
+
+
+def narrative_volume_trend(months, vol):
+    if not vol or len(vol) < 2:
+        return ('Transaction history is too short to identify a clear directional trend. '
+                'A wider data window would provide a clearer signal on activity levels.')
+    n = len(vol); third = max(n // 3, 1)
+    early = sum(vol[:third]) / third if third else 0
+    late  = sum(vol[-third:]) / third if third else 0
+    delta_pct = ((late - early) / early * 100) if early > 0 else 0
+    total = int(sum(vol))
+    if delta_pct > 20:
+        return (f'Transaction volume has accelerated meaningfully — the most recent months '
+                f'are running roughly {delta_pct:+.0f}% above levels seen at the start of '
+                f'the window. {total} sales were recorded across the period overall, and '
+                f'the upward trajectory points to strengthening buyer interest.')
+    if delta_pct > 5:
+        return (f'Transaction volume is gradually rising, with recent months averaging '
+                f'about {delta_pct:+.0f}% above the start of the window. {total} sales '
+                f'have been recorded in total, signalling steady underlying demand.')
+    if delta_pct < -20:
+        return (f'Transaction volume has cooled meaningfully — recent months are running '
+                f'about {abs(delta_pct):.0f}% below where the window started, with {total} '
+                f'sales recorded overall. Sellers should plan for longer marketing periods '
+                f'and price guidance set realistically.')
+    if delta_pct < -5:
+        return (f'Transaction volume is easing, with recent months running about '
+                f'{abs(delta_pct):.0f}% below the start of the window. {total} sales were '
+                f'recorded across the full period.')
+    return (f'Transaction volume is broadly stable, with {total} sales recorded across the '
+            f'period and no significant directional shift in monthly counts.')
+
+
+def narrative_price_trend(prices_M, psf):
+    valid_p = [p for p in (prices_M or []) if p]
+    valid_s = [p for p in (psf or []) if p]
+    if not valid_p and not valid_s:
+        return 'Price trend data is not available for this period.'
+    if len(valid_p) >= 2:
+        first, last = valid_p[0], valid_p[-1]
+        if first and first > 0:
+            pct = (last - first) / first * 100
+            if pct > 15:
+                return (f'Average sale prices have appreciated meaningfully over the period, '
+                        f'rising from approximately AED {first:.2f}M to AED {last:.2f}M '
+                        f'({pct:+.1f}%). This is consistent with sustained demand against '
+                        f'a backdrop of limited new supply at this price point.')
+            if pct > 5:
+                return (f'Sale prices have grown at a healthy pace, moving from AED {first:.2f}M '
+                        f'to AED {last:.2f}M ({pct:+.1f}%). The trajectory points to steady '
+                        f'appreciation rather than a speculative spike.')
+            if pct < -10:
+                return (f'Sale prices have softened over the period, falling from AED '
+                        f'{first:.2f}M to AED {last:.2f}M ({pct:+.1f}%). Buyers may have '
+                        f'more leverage; sellers should price competitively and be patient '
+                        f'on negotiation.')
+            return (f'Sale prices are essentially flat over the period (AED {first:.2f}M to '
+                    f'AED {last:.2f}M, {pct:+.1f}%). The market is consolidating after '
+                    f'recent moves; pricing should track the median rather than chase '
+                    f'recent highs.')
+    return 'See chart above for detailed monthly price movement.'
+
+
+def narrative_market_outlook(data):
+    community = data.get('community') or 'this community'
+    return (
+        f'Reading the indicator bar above: <b>Price Direction</b> reflects the recent '
+        f'trajectory of average price per square foot — Upward means values are appreciating. '
+        f'<b>Demand Level</b> captures buyer activity relative to typical volumes; "High" '
+        f'indicates competitive bidding and faster sales cycles. <b>Supply</b> reflects '
+        f'availability of comparable units coming to market — "Tight" usually supports '
+        f'continued price strength because buyers have fewer alternatives. <b>Rental '
+        f'Outlook</b> reflects whether income returns are expected to hold or improve. '
+        f'For an owner in {community}, this combination typically supports holding the asset '
+        f'and reviewing pricing every 6 months; sellers benefit from current pricing strength, '
+        f'while buyers should expect competitive market conditions for well-presented stock.')
+
+
 # ── Layout helpers ─────────────────────────────────────────────────────────────
 def section_header(label, title):
     return [
@@ -438,6 +600,11 @@ def parse_pm_transactions(csv_path: str) -> pd.DataFrame:
                 df[raw_col].astype(str).str.replace(r'[^\d.]', '', regex=True), errors='coerce')
     if 'transaction_date' in df.columns:
         df['transaction_date'] = pd.to_datetime(df['transaction_date'], errors='coerce', dayfirst=True)
+        # Hard cap: drop rows with no parseable date or a future date. PM
+        # exports occasionally include forward-dated off-plan registrations;
+        # those skew every trend chart if they leak through.
+        df = df[df['transaction_date'].notna() &
+                (df['transaction_date'] <= pd.Timestamp.today())].copy()
         df['month'] = df['transaction_date'].dt.to_period('M')
     if 'bedrooms' in df.columns:
         df['bedrooms'] = df['bedrooms'].astype(str).str.extract(r'(\d+)')[0].fillna('0')
@@ -458,6 +625,8 @@ def parse_pm_rentals(csv_path: str) -> pd.DataFrame:
                 df[col].astype(str).str.replace(r'[^\d.]','',regex=True), errors='coerce')
     if 'reg_date' in df.columns:
         df['reg_date'] = pd.to_datetime(df['reg_date'], errors='coerce', dayfirst=True)
+        df = df[df['reg_date'].notna() &
+                (df['reg_date'] <= pd.Timestamp.today())].copy()
         df['month'] = df['reg_date'].dt.to_period('M')
     return df
 
@@ -541,10 +710,45 @@ def analyse(txn_df: pd.DataFrame, rental_df: pd.DataFrame, community: str) -> di
     txn  = _filter_by_community(txn_df, community)
     rent = _filter_by_community(rental_df, community)
 
-    txn = txn[txn.get('transaction_type','Sale').astype(str).str.contains('Sale|sale|secondary|ready', na=False)] \
-          if 'transaction_type' in txn.columns else txn
+    # Exclude gifts and grants — they distort price aggregates because the
+    # "price" recorded for a gift is the declared transfer value, not a
+    # market sale price. The PM column for this is `evdnc_name`, which the
+    # parser renames to `registration_type`.
+    if 'registration_type' in txn.columns:
+        rt = txn['registration_type'].astype(str).str.lower()
+        txn = txn[~rt.str.contains('gift|grant', regex=True, na=False)].copy()
 
-    # ── Core metrics
+    # Legacy explicit-type filter for CSVs that include 'transaction_type'.
+    if 'transaction_type' in txn.columns:
+        txn = txn[txn['transaction_type'].astype(str).str.contains(
+            'Sale|sale|secondary|ready', na=False)].copy()
+
+    # ── Period split ─────────────────────────────────────────────────────────
+    # 'This period' = the most recent 12 months of qualifying data. Every
+    # aggregate metric below is computed from this slice so the cover hero,
+    # the metric cards, and the highlights table can never disagree.
+    txn_all = txn  # full filtered set, used for multi-year YoY history below
+    if 'transaction_date' in txn_all.columns and txn_all['transaction_date'].notna().any():
+        last_date   = txn_all['transaction_date'].max()
+        mid_cutoff  = last_date - pd.DateOffset(months=12)
+        earlier_cut = last_date - pd.DateOffset(months=24)
+        curr = txn_all[txn_all['transaction_date'] > mid_cutoff].copy()
+        prev = txn_all[(txn_all['transaction_date'] <= mid_cutoff) &
+                       (txn_all['transaction_date'] > earlier_cut)].copy()
+        try:
+            out['txn_period'] = (
+                f"{(mid_cutoff + pd.DateOffset(days=1)).strftime('%b %Y')} – "
+                f"{last_date.strftime('%b %Y')}"
+            )
+        except Exception:
+            pass
+    else:
+        curr = txn_all.copy()
+        prev = txn_all.iloc[0:0].copy()
+    has_prev = len(prev) > 0
+    txn = curr  # all aggregates and charts below now reflect this-period only
+
+    # ── Core metrics (this period)
     out['total_transactions'] = str(len(txn))
     if 'price_aed' in txn.columns and txn['price_aed'].notna().any():
         out['avg_price']   = f"AED {txn['price_aed'].mean()/1e6:.2f}M"
@@ -552,20 +756,28 @@ def analyse(txn_df: pd.DataFrame, rental_df: pd.DataFrame, community: str) -> di
     if 'price_psf' in txn.columns and txn['price_psf'].notna().any():
         out['avg_psf'] = f"AED {txn['price_psf'].mean():,.0f}"
 
-    # Rental yield
+    # Rental yield (this-period sales avg vs all available rent records)
     if 'annual_rent' in rent.columns and 'price_aed' in txn.columns:
         avg_rent  = rent['annual_rent'].mean()
         avg_price = txn['price_aed'].mean()
         if avg_price > 0:
             out['avg_yield'] = f"{(avg_rent/avg_price)*100:.1f}%"
 
-    # ── Monthly series
+    # ── Monthly series (this period, with partial current month dropped so
+    # the trend chart isn't tanked by a half-month of data).
     if 'month' in txn.columns:
         monthly = txn.groupby('month').agg(
             volume=('price_aed','count'),
             avg_psf=('price_psf','mean'),
             avg_price=('price_aed','mean')
-        ).tail(12)
+        ).tail(13)
+        try:
+            today_period = pd.Period(datetime.now(), freq='M')
+            if len(monthly) > 0 and monthly.index[-1] >= today_period:
+                monthly = monthly.iloc[:-1]
+        except Exception:
+            pass
+        monthly = monthly.tail(12)
         out['months']         = [str(m) for m in monthly.index]
         out['monthly_volume'] = monthly['volume'].tolist()
         out['monthly_psf']    = monthly['avg_psf'].round(0).tolist()
@@ -619,18 +831,19 @@ def analyse(txn_df: pd.DataFrame, rental_df: pd.DataFrame, community: str) -> di
             'sea_view_pct':   f"{sea_view/max(len(notes),1)*100:.0f}%",
         }
 
-    # ── YoY comparison (if 2+ years of data)
-    if 'month' in txn.columns and 'price_psf' in txn.columns:
-        txn = txn.copy()
-        txn['year'] = txn['transaction_date'].dt.year
-        yr = txn.groupby('year')['price_psf'].mean()
+    # ── YoY comparison — uses txn_all so the historical chart spans every
+    # available year, not just the most recent 12 months. yoy_growth itself
+    # is set further down by the highlights block (rolling 12mo vs prior
+    # 12mo split, which is more accurate than calendar-year buckets).
+    if ('month' in txn_all.columns and 'price_psf' in txn_all.columns
+            and 'transaction_date' in txn_all.columns):
+        ty = txn_all.copy()
+        ty['year'] = ty['transaction_date'].dt.year
+        yr = ty.groupby('year')['price_psf'].mean()
         if len(yr) >= 2:
             yrs = sorted(yr.index)
             out['years']     = [str(y) for y in yrs]
             out['yoy_price'] = [round(yr[y]) for y in yrs]
-            if len(yrs) >= 2:
-                growth = (yr[yrs[-1]] - yr[yrs[-2]]) / yr[yrs[-2]] * 100
-                out['yoy_growth'] = f"{growth:+.1f}%"
 
     # ── View Premium Analysis (custom_view column)
     if 'custom_view' in txn.columns and 'price_psf' in txn.columns:
@@ -671,30 +884,10 @@ def analyse(txn_df: pd.DataFrame, rental_df: pd.DataFrame, community: str) -> di
         except Exception:
             pass
 
-    # ── Performance at a Glance — period-comparison highlights table ──────────
-    # Splits the filtered txns into the most recent 12 months vs the prior 12
-    # months. If we don't have dates we still emit a one-column table so the
-    # PDF stops showing the old 847/721 dummy fallback.
+    # ── Performance at a Glance — period-comparison highlights table.
+    # Uses curr/prev defined at the top of analyse() so the table values are
+    # guaranteed to match the metric cards / cover hero (same period split).
     try:
-        if 'transaction_date' in txn.columns and txn['transaction_date'].notna().any():
-            last_date   = txn['transaction_date'].max()
-            mid_cutoff  = last_date - pd.DateOffset(months=12)
-            earlier_cut = last_date - pd.DateOffset(months=24)
-            curr = txn[txn['transaction_date'] > mid_cutoff]
-            prev = txn[(txn['transaction_date'] <= mid_cutoff) & (txn['transaction_date'] > earlier_cut)]
-            has_prev = len(prev) > 0
-            try:
-                out['txn_period'] = (
-                    f"{(mid_cutoff + pd.DateOffset(days=1)).strftime('%b %Y')} – "
-                    f"{last_date.strftime('%b %Y')}"
-                )
-            except Exception:
-                pass
-        else:
-            curr     = txn
-            prev     = txn.iloc[0:0]
-            has_prev = False
-
         def _safe_mean(df, col):
             if col not in df.columns: return None
             v = df[col].dropna()
@@ -822,6 +1015,8 @@ def page_executive_summary(data):
         (data.get('avg_psf','AED 1,622'),       'AVG PRICE PER SQFT',   ''),
         (data.get('avg_yield','6.8%'),          'AVG RENTAL YIELD',     ''),
     ]))
+    els.append(Spacer(1, 4*mm))
+    els.append(Paragraph(narrative_executive_overview(data), S('body')))
     els.append(Spacer(1, 5*mm))
     els.append(Paragraph('Performance at a Glance', S('h2')))
     highlights = data.get('highlights', [
@@ -853,9 +1048,20 @@ def page_transaction_analysis(data):
     prices = data.get('monthly_price',  [2.4,2.45,2.5,2.52,2.55,2.6,2.63,2.68,2.72,2.77,2.81,2.84])
 
     els.append(fig_img(bar_chart(months, vol, 'Monthly Transaction Volume', 'No. Transactions'), PAGE_W-36*mm))
+    els.append(Spacer(1, 3*mm))
+    els.append(Paragraph(narrative_volume_trend(months, vol), S('body')))
     els.append(Spacer(1, 6*mm))
-    els.append(fig_img(line_chart(months, [(psf,'Avg PSF (AED)'),(prices,'Avg Price (AED M)')],
-        'Price Per Sqft & Average Sale Price Trend'), PAGE_W-36*mm))
+    # Dual Y-axis: PSF lives in low thousands, avg price in millions —
+    # plotting them on a shared axis (the old approach) made the price
+    # line appear flat near zero. Separate axes restore both signals.
+    els.append(fig_img(
+        dual_line_chart(months,
+                        (psf,    'Avg PSF (AED)'),
+                        (prices, 'Avg Price (AED Millions)'),
+                        'Price Per Sqft & Average Sale Price Trend'),
+        PAGE_W-36*mm))
+    els.append(Spacer(1, 3*mm))
+    els.append(Paragraph(narrative_price_trend(prices, psf), S('body')))
     els.append(Spacer(1, 3*mm))
 
     if 'prop_type_data' in data:
@@ -1036,6 +1242,8 @@ def page_market_outlook(data):
     bt = Table(badge_cells, colWidths=[(PAGE_W-36*mm)/4]*4)
     bt.setStyle(TableStyle([('LEFTPADDING',(0,0),(-1,-1),3),('RIGHTPADDING',(0,0),(-1,-1),3)]))
     els.append(bt)
+    els.append(Spacer(1, 4*mm))
+    els.append(Paragraph(narrative_market_outlook(data), S('body')))
     els.append(Spacer(1, 5*mm))
 
     outlook_items = data.get('outlook_items', [
