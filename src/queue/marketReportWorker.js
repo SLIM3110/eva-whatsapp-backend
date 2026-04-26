@@ -34,7 +34,14 @@ function runPython(args, timeoutMs) {
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', function (d) { stdout += d.toString('utf8'); });
-    child.stderr.on('data', function (d) { stderr += d.toString('utf8'); });
+    child.stderr.on('data', function (d) {
+      const s = d.toString('utf8');
+      stderr += s;
+      // Also stream to PM2 logs in real time so diagnostic lines (e.g. the
+      // [filter] community=... matched=N/M output) are visible during a run,
+      // not just on failure.
+      process.stderr.write(s);
+    });
 
     const timer = setTimeout(function () {
       try { child.kill('SIGKILL'); } catch (_) {}

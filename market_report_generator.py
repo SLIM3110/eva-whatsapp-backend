@@ -4,7 +4,7 @@ Supports: single-community reports and multi-area comparison reports.
 Input: Property Monitor CSV exports (DLD data).
 """
 
-import io, os, re
+import io, os, re, sys
 from datetime import datetime
 import matplotlib
 matplotlib.use('Agg')
@@ -467,22 +467,71 @@ def parse_pm_rentals(csv_path: str) -> pd.DataFrame:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _filter_by_community(df: pd.DataFrame, community: str) -> pd.DataFrame:
-    """Match `community` as a substring across every plausibly-named location
-    column. PM exports have master_development AND sub_loc_1 / sub_loc_2 / etc;
-    only the first ever gets renamed to `area`, so a single-column filter misses
-    rows whose match lives on sub_loc_1 (e.g., user types 'Mudon Al Ranim' but
-    `area` was set from `master_development='Mudon'`)."""
+    """Match `community` against every plausibly-named location column.
+    Three escalating strategies:
+      1) lowercase substring on the joined location text per row
+      2) normalised match (strip non-alphanumerics — so 'Al-Ranim' == 'Al Ranim')
+      3) word-set match (all significant target words present in the row)
+    Diagnostic info is written to stderr so PM2 logs surface why a filter missed."""
     if df is None or df.empty or not community:
         return df.copy() if df is not None else pd.DataFrame()
-    AREA_COLS = ['area', 'sub_loc_1', 'sub_loc_2', 'sub_loc_3', 'sub_loc_4',
+
+    # Includes both renamed canonical names AND raw PM column names that don't
+    # always get renamed (e.g. `loc` on rental exports, `sub_loc_1` on sales).
+    AREA_COLS = ['area', 'loc', 'sub_loc_1', 'sub_loc_2', 'sub_loc_3', 'sub_loc_4',
                  'master_development', 'community', 'location', 'neighborhood',
-                 'neighbourhood', 'building', 'sub_area']
+                 'neighbourhood', 'building', 'sub_area', 'project']
     present = [c for c in AREA_COLS if c in df.columns]
     if not present:
+        try:
+            sys.stderr.write(
+                '[filter] no area columns matched. df cols: '
+                + repr(list(df.columns)[:30]) + '\n')
+            sys.stderr.flush()
+        except Exception:
+            pass
         return df.copy()
-    search = df[present].fillna('').astype(str).agg(' | '.join, axis=1).str.lower()
+
     target = community.strip().lower()
-    return df[search.str.contains(target, regex=False, na=False)].copy()
+    search = df[present].fillna('').astype(str).agg(' | '.join, axis=1).str.lower()
+
+    # Strategy 1: direct substring
+    mask = search.str.contains(target, regex=False, na=False)
+    strategy = '1-substring'
+
+    # Strategy 2: strip everything but a-z 0-9, then substring
+    if not mask.any():
+        def _norm(s): return re.sub(r'[^a-z0-9]+', '', s)
+        search_n = search.apply(_norm)
+        target_n = _norm(target)
+        if target_n:
+            mask = search_n.str.contains(target_n, regex=False, na=False)
+            strategy = '2-normalised'
+
+    # Strategy 3: every significant target word (>=3 chars) appears in the row
+    if not mask.any():
+        words = [w for w in re.findall(r'[a-z0-9]+', target) if len(w) >= 3]
+        if words:
+            mask = pd.Series(True, index=df.index)
+            for w in words:
+                mask = mask & search.str.contains(w, regex=False, na=False)
+            strategy = '3-word-set'
+
+    matched = int(mask.sum())
+    try:
+        sys.stderr.write(
+            '[filter] community=' + repr(target)
+            + ' cols=' + repr(present)
+            + ' strategy=' + strategy
+            + ' matched=' + str(matched) + '/' + str(len(df)) + '\n')
+        if matched == 0 and len(search):
+            sample = search.head(3).tolist()
+            sys.stderr.write('[filter] sample area text: ' + repr(sample) + '\n')
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+    return df[mask].copy()
 
 
 def analyse(txn_df: pd.DataFrame, rental_df: pd.DataFrame, community: str) -> dict:
