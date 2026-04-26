@@ -85,6 +85,16 @@ def fig_img(fig, w, h=None):
 
 def bar_chart(labels, values, title, ylabel, highlight_last=True):
     fig, ax = plt.subplots(figsize=(9.0, 3.6))
+    if not values:
+        ax.text(0.5, 0.5, 'No data available for this period',
+                ha='center', va='center', fontsize=11, color='#6B6B6B',
+                transform=ax.transAxes)
+        ax.set_title(title, fontsize=11, fontweight='bold', color='#1B4D3E', pad=10)
+        ax.set_xticks([]); ax.set_yticks([])
+        ax.spines[['top','right','left','bottom']].set_visible(False)
+        ax.set_facecolor('white')
+        fig.patch.set_alpha(0); fig.tight_layout()
+        return fig
     cols = [EVA_PALETTE[0]] * len(values)
     if highlight_last: cols[-1] = EVA_PALETTE[1]
     bars = ax.bar(range(len(labels)), values, color=cols, width=0.62, zorder=3)
