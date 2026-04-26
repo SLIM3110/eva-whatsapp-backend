@@ -1,24 +1,19 @@
 'use strict';
 
-const express     = require('express');
-const router      = express.Router();
-const multer      = require('multer');
-const { execSync }= require('child_process');
-const fs          = require('fs');
-const path        = require('path');
-const os          = require('os');
+const express = require('express');
+const router  = express.Router();
+const multer  = require('multer');
+const fs      = require('fs');
+const path    = require('path');
+const os      = require('os');
 const { createClient } = require('@supabase/supabase-js');
+const { marketReportQueue } = require('../queue/marketReportQueue');
 
-// ── Supabase client ──────────────────────────────────────────────────────────
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_KEY
 );
 
-// ── Multer — memory storage ──────────────────────────────────────────────────
-// Accepts the legacy single-CSV upload (`csv_file` + comma-separated communities)
-// AND the new per-area CSV upload for comparison reports (`area_csv_1` ...
-// `area_csv_6` plus matching `area_name_1` ... `area_name_6` body fields).
 const MAX_AREAS = 6;
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -28,50 +23,30 @@ const upload = multer({
   { name: 'rental_csv_file', maxCount: 1 },
   { name: 'image_file',      maxCount: 1 },
   ...Array.from({ length: MAX_AREAS }, (_, i) => ({
-    name: `area_csv_${i + 1}`,        maxCount: 1,
+    name: 'area_csv_' + (i + 1),        maxCount: 1,
   })),
   ...Array.from({ length: MAX_AREAS }, (_, i) => ({
-    name: `area_rental_csv_${i + 1}`, maxCount: 1,
+    name: 'area_rental_csv_' + (i + 1), maxCount: 1,
   })),
 ]);
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-const SCRIPT = path.join(__dirname, '..', '..', 'scripts', 'run_report.py');
-
-function writeTmpJson(obj, tag, ts) {
-  const p = path.join(os.tmpdir(), `eva_${tag}_${ts}.json`);
-  fs.writeFileSync(p, JSON.stringify(obj));
-  return p;
-}
-
-function runPython(args, timeoutMs = 90_000) {
-  const cmd = `python3 "${SCRIPT}" ${args.map(a => `"${a}"`).join(' ')}`;
-  const raw  = execSync(cmd, { encoding: 'utf8', timeout: timeoutMs });
-  return JSON.parse(raw.trim());
-}
-
-async function getGeminiKey() {
-  try {
-    const { data } = await supabase
-      .from('api_settings')
-      .select('gemini_api_key')
-      .eq('id', 1)
-      .single();
-    return data?.gemini_api_key || process.env.GEMINI_API_KEY || '';
-  } catch {
-    return process.env.GEMINI_API_KEY || '';
-  }
-}
-
 // ── POST /api/market-reports/generate ───────────────────────────────────────
+// Parses uploads, writes them to /tmp, enqueues a background job, and returns
+// the jobId immediately. The worker process consumes the job and runs the full
+// analyse → Gemini → generate → upload → insert pipeline.
 router.post('/generate', (req, res) => {
   upload(req, res, async (uploadErr) => {
     if (uploadErr) return res.status(400).json({ error: uploadErr.message });
 
     const tempFiles = [];
 
+    function cleanupOnError() {
+      for (const f of tempFiles) {
+        try { if (f && fs.existsSync(f)) fs.unlinkSync(f); } catch (_) {}
+      }
+    }
+
     try {
-      // ── 1. Parse & validate ───────────────────────────────────────────────
       const {
         report_type            = 'single',
         report_period          = '',
@@ -93,26 +68,25 @@ router.post('/generate', (req, res) => {
       const ts = Date.now();
 
       // ── Per-area CSV upload (new comparison-mode flow) ─────────────────────
-      // For each `area_csv_N`, accept a matching `area_name_N` body field.
-      // Falls back to the legacy single-CSV path if no area_csv_* are provided.
-      const areaCsvs = []; // [{ csv_path, rental_csv_path|null, community_name }]
+      const areaCsvs = [];
       for (let i = 1; i <= MAX_AREAS; i++) {
-        const file = req.files?.[`area_csv_${i}`]?.[0];
+        const file = req.files && req.files['area_csv_' + i] && req.files['area_csv_' + i][0];
         if (!file) continue;
-        const name = (req.body[`area_name_${i}`] || '').trim();
+        const name = (req.body['area_name_' + i] || '').trim();
         if (!name) {
+          cleanupOnError();
           return res.status(400).json({
-            error: `area_csv_${i} was uploaded but area_name_${i} is missing — every per-area CSV needs a community/area name.`,
+            error: 'area_csv_' + i + ' was uploaded but area_name_' + i + ' is missing — every per-area CSV needs a community/area name.',
           });
         }
-        const p = path.join(os.tmpdir(), `pm_area${i}_${ts}.csv`);
+        const p = path.join(os.tmpdir(), 'pm_area' + i + '_' + ts + '.csv');
         fs.writeFileSync(p, file.buffer);
         tempFiles.push(p);
 
         let areaRentalPath = null;
-        const areaRentalFile = req.files?.[`area_rental_csv_${i}`]?.[0];
+        const areaRentalFile = req.files && req.files['area_rental_csv_' + i] && req.files['area_rental_csv_' + i][0];
         if (areaRentalFile) {
-          areaRentalPath = path.join(os.tmpdir(), `pm_area${i}_rental_${ts}.csv`);
+          areaRentalPath = path.join(os.tmpdir(), 'pm_area' + i + '_rental_' + ts + '.csv');
           fs.writeFileSync(areaRentalPath, areaRentalFile.buffer);
           tempFiles.push(areaRentalPath);
         }
@@ -122,7 +96,8 @@ router.post('/generate', (req, res) => {
 
       const usingPerAreaCsvs = areaCsvs.length > 0;
 
-      if (!usingPerAreaCsvs && !req.files?.csv_file?.[0]) {
+      if (!usingPerAreaCsvs && !(req.files && req.files.csv_file && req.files.csv_file[0])) {
+        cleanupOnError();
         return res.status(400).json({
           error: 'A Property Monitor CSV file is required (csv_file for single/legacy mode, or area_csv_1..area_csv_6 for the new comparison flow).',
         });
@@ -142,20 +117,18 @@ router.post('/generate', (req, res) => {
       }
 
       if (communities.length === 0) {
+        cleanupOnError();
         return res.status(400).json({ error: 'At least one community/area name is required.' });
       }
 
       const primaryCommunity = communities[0];
 
-      // ── 2. Save legacy uploaded files to /tmp ──────────────────────────────
-      // In per-area mode the area files were already written above; csvPath
-      // becomes the first area CSV so that Gemini / single-mode helpers still
-      // have a primary file to look at.
+      // ── Save legacy uploaded files to /tmp ────────────────────────────────
       let csvPath;
       if (usingPerAreaCsvs) {
         csvPath = areaCsvs[0].csv_path;
       } else {
-        csvPath = path.join(os.tmpdir(), `pm_${ts}.csv`);
+        csvPath = path.join(os.tmpdir(), 'pm_' + ts + '.csv');
         fs.writeFileSync(csvPath, req.files.csv_file[0].buffer);
         tempFiles.push(csvPath);
       }
@@ -163,240 +136,98 @@ router.post('/generate', (req, res) => {
       let rentalCsvPath = null;
       if (usingPerAreaCsvs) {
         rentalCsvPath = areaCsvs[0].rental_csv_path;
-      } else if (req.files?.rental_csv_file?.[0]) {
-        rentalCsvPath = path.join(os.tmpdir(), `pm_rental_${ts}.csv`);
+      } else if (req.files && req.files.rental_csv_file && req.files.rental_csv_file[0]) {
+        rentalCsvPath = path.join(os.tmpdir(), 'pm_rental_' + ts + '.csv');
         fs.writeFileSync(rentalCsvPath, req.files.rental_csv_file[0].buffer);
         tempFiles.push(rentalCsvPath);
       }
 
       let imagePath     = null;
-      let imageBase64   = null;
       let imageMimeType = null;
-      if (req.files?.image_file?.[0]) {
+      if (req.files && req.files.image_file && req.files.image_file[0]) {
         const imgFile = req.files.image_file[0];
-        imagePath     = path.join(os.tmpdir(), `report_img_${ts}.jpg`);
+        imagePath     = path.join(os.tmpdir(), 'report_img_' + ts + '.jpg');
         fs.writeFileSync(imagePath, imgFile.buffer);
         tempFiles.push(imagePath);
-        imageBase64   = imgFile.buffer.toString('base64');
         imageMimeType = imgFile.mimetype || 'image/jpeg';
       }
 
-      // ── 3. Python: parse CSV + run data analysis ──────────────────────────
-      const analyseArgsPath = writeTmpJson(
-        {
-          communities,
-          report_type,
-          rental_csv_path: rentalCsvPath,
-          area_csvs: usingPerAreaCsvs ? areaCsvs : null,
-        },
-        'analyse_args', ts
-      );
-      tempFiles.push(analyseArgsPath);
-
-      let analysisResult;
-      try {
-        analysisResult = runPython(['analyse', csvPath, analyseArgsPath], 60_000);
-      } catch (e) {
-        console.error('[analyse] Python error:', e.message);
-        return res.status(500).json({
-          error: 'Failed to analyse CSV. Make sure it is a valid Property Monitor export.',
-          detail: e.message,
-        });
-      }
-
-      if (analysisResult.error) {
-        return res.status(500).json({ error: analysisResult.error });
-      }
-
-      const primaryData = report_type === 'comparison'
-        ? (analysisResult.areas_data?.[0] || {})
-        : analysisResult;
-
-      // ── 4. Net yield calculation ──────────────────────────────────────────
-      let netYield          = null;
-      let serviceChargeNote = '';
-      if (service_charge_psf && parseFloat(service_charge_psf) > 0) {
-        const scVal     = parseFloat(service_charge_psf);
-        const grossPct  = parseFloat(String(primaryData.avg_yield  || '').replace('%', '')) || 0;
-        const avgPsfVal = parseFloat(String(primaryData.avg_psf    || '').replace(/[^\d.]/g, '')) || 0;
-        if (grossPct > 0 && avgPsfVal > 0) {
-          netYield = `${Math.max(0, grossPct - (scVal / avgPsfVal) * 100).toFixed(1)}%`;
-        }
-        serviceChargeNote = `AED ${scVal.toLocaleString('en-US', { maximumFractionDigits: 0 })}/sqft/year`;
-      }
-
-      // ── 5. Gemini narrative ───────────────────────────────────────────────
-      const geminiKey = await getGeminiKey();
-      let geminiData  = {};
-
-      if (geminiKey) {
-        const metricsLines = [
-          `Community:               ${communities.join(', ')}`,
-          `Total transactions:      ${primaryData.total_transactions || 'N/A'}`,
-          `Total sales volume:      ${primaryData.total_volume       || 'N/A'}`,
-          `Average sale price:      ${primaryData.avg_price          || 'N/A'}`,
-          `Average PSF:             ${primaryData.avg_psf            || 'N/A'}`,
-          `YoY price growth:        ${primaryData.yoy_growth         || 'N/A'}`,
-          `Gross rental yield:      ${primaryData.avg_yield          || 'N/A'}`,
-          netYield ? `Net yield (after SC):    ${netYield} (service charge ${serviceChargeNote})` : null,
-        ].filter(Boolean).join('\n');
-
-        const agentBlock = [
-          custom_location_notes  ? `Agent observation: "${custom_location_notes}"` : null,
-          agent_instruction      ? `Agent instruction: "${agent_instruction}". Incorporate naturally.` : null,
-          (imageBase64 && personalisation_prompt)
-            ? `Image uploaded. Agent note: "${personalisation_prompt}". Return image_placement as "cover" or "location_analysis" and write a short image_caption.`
-            : null,
-        ].filter(Boolean).join('\n\n');
-
-        const prompt = `You are a senior Dubai real estate analyst writing content for a professional PDF investor report by EVA Real Estate LLC.
-
-KEY MARKET DATA (from DLD / Property Monitor records):
-${metricsLines}
-${agentBlock ? `\nAGENT INSTRUCTIONS:\n${agentBlock}` : ''}
-
-Return ONLY valid JSON, no markdown fences:
-{
-  "exec_summary": "100-120 word executive summary in plain English. Be specific about numbers. Explain what they mean for an investor. No jargon.",
-  "outlook_items": [
-    {"title": "What does the price trend tell us?", "body": "150-200 words on price momentum and 6-12 month outlook."},
-    {"title": "Will there be more supply?", "body": "150-200 words on supply dynamics and structural constraints."},
-    {"title": "What does this mean for rental income?", "body": "150-200 words covering gross yield, net return, AED rent growth, 3-5 year hold view."},
-    {"title": "The broader Dubai picture", "body": "150-200 words on Dubai macro tailwinds and risk factors."}
-  ]${imageBase64 && personalisation_prompt ? ',\n  "image_placement": "cover",\n  "image_caption": "1-sentence caption."' : ''}
-}`;
-
-        try {
-          const parts = [{ text: prompt }];
-          if (imageBase64 && personalisation_prompt) {
-            parts.push({ inlineData: { mimeType: imageMimeType, data: imageBase64 } });
-          }
-          const gemRes = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
-            {
-              method:  'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body:    JSON.stringify({ contents: [{ parts }], generationConfig: { temperature: 0.8 } }),
-            }
-          );
-          const gemJson = await gemRes.json();
-          const rawText = (gemJson?.candidates?.[0]?.content?.parts?.[0]?.text || '')
-            .trim()
-            .replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim();
-          if (rawText) geminiData = JSON.parse(rawText);
-        } catch (e) {
-          console.warn('[Gemini] Error — report will generate without AI narrative:', e.message);
-        }
-      }
-
-      // ── 6. Build full data dict for PDF generator ─────────────────────────
-      const reportData = {
-        report_type,
-        communities,
-        community:      primaryCommunity,
-        report_date:    new Date().toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }),
-        report_period:  report_period || new Date().toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }),
-        agent_name,
-        agent_contact,
-        custom_location_notes,
-
-        ...analysisResult,
-
-        exec_summary:  geminiData.exec_summary  || '',
-        outlook_items: geminiData.outlook_items || [],
-
-        ...(netYield          ? { net_yield: netYield }                    : {}),
-        ...(serviceChargeNote ? { service_charge_note: serviceChargeNote } : {}),
-
-        ...(imagePath && geminiData.image_placement === 'cover'
-          ? { cover_image_path: imagePath } : {}),
-        ...(imagePath && geminiData.image_placement === 'location_analysis'
-          ? { location_image_path: imagePath } : {}),
-        ...(geminiData.image_caption ? { image_caption: geminiData.image_caption } : {}),
+      // ── Build job payload (paths + form fields only, no buffers) ──────────
+      const jobData = {
+        ts: ts,
+        report_type: report_type,
+        report_period: report_period,
+        agent_name: agent_name,
+        agent_contact: agent_contact,
+        agent_id: String(agent_id),
+        custom_location_notes: custom_location_notes,
+        personalisation_prompt: personalisation_prompt,
+        agent_instruction: agent_instruction,
+        service_charge_psf: service_charge_psf,
+        communities: communities,
+        primaryCommunity: primaryCommunity,
+        csvPath: csvPath,
+        rentalCsvPath: rentalCsvPath,
+        imagePath: imagePath,
+        imageMimeType: imageMimeType,
+        areaCsvs: areaCsvs,
+        usingPerAreaCsvs: usingPerAreaCsvs,
+        tempFiles: tempFiles,
       };
 
-      // ── 7. Python: generate PDF ───────────────────────────────────────────
-      const pdfPath      = path.join(os.tmpdir(), `eva_report_${ts}.pdf`);
-      const generateArgs = writeTmpJson(
-        {
-          data: reportData,
-          rental_csv_path: rentalCsvPath,
-          area_csvs: usingPerAreaCsvs ? areaCsvs : null,
-        },
-        'gen_args', ts
-      );
-      tempFiles.push(pdfPath, generateArgs);
-
-      try {
-        runPython(['generate', csvPath, pdfPath, generateArgs], 120_000);
-      } catch (e) {
-        console.error('[generate] Python error:', e.message);
-        return res.status(500).json({ error: 'PDF generation failed: ' + e.message });
-      }
-
-      // ── 8. Upload PDF to Supabase Storage ─────────────────────────────────
-      const safeName    = primaryCommunity
-        .replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 60);
-      const storagePath = `reports/${agent_id}/${ts}_${safeName}.pdf`;
-      const pdfBuffer   = fs.readFileSync(pdfPath);
-
-      const { error: uploadError } = await supabase.storage
-        .from('market-reports')
-        .upload(storagePath, pdfBuffer, {
-          contentType: 'application/pdf',
-          upsert: false,
-        });
-
-      if (uploadError) {
-        console.error('[storage] Upload error:', uploadError);
-        return res.status(500).json({ error: 'Storage upload failed: ' + uploadError.message });
-      }
-
-      const { data: { publicUrl } } = supabase.storage
-        .from('market-reports')
-        .getPublicUrl(storagePath);
-
-      // ── 9. Insert record into market_reports ──────────────────────────────
-      const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
-
-      const { data: record, error: dbError } = await supabase
-        .from('market_reports')
-        .insert({
-          created_by:    agent_id,
-          communities:   communities,
-          community_name: communities.join(', '),
-          report_type,
-          agent_name,
-          file_url:      publicUrl,
-          report_url:    publicUrl,
-          storage_path:  storagePath,
-          expires_at:    expiresAt,
-        })
-        .select()
-        .single();
-
-      if (dbError) {
-        console.error('[db] Insert error:', dbError.message);
-      }
-
-      // ── 10. Respond ───────────────────────────────────────────────────────
-      return res.json({
-        success:    true,
-        report_url: publicUrl,
-        report_id:  record?.id ?? null,
-        expires_at: expiresAt,
+      const job = await marketReportQueue.add('generate', jobData, {
+        removeOnComplete: { age: 900 },
+        removeOnFail:     { age: 3600 },
+        attempts: 1,
       });
 
-    } catch (err) {
-      console.error('[marketReports] Unhandled error:', err);
-      return res.status(500).json({ error: err.message || 'Internal server error' });
+      return res.json({ success: true, jobId: job.id });
 
-    } finally {
-      for (const f of tempFiles) {
-        try { if (f && fs.existsSync(f)) fs.unlinkSync(f); } catch (_) {}
-      }
+    } catch (err) {
+      console.error('[marketReports] Enqueue error:', err);
+      cleanupOnError();
+      return res.status(500).json({ error: err.message || 'Internal server error' });
     }
   });
+});
+
+// ── GET /api/market-reports/status/:jobId ───────────────────────────────────
+// Caller must pass ?agent_id=... matching the job's agent_id, otherwise 404
+// (404 not 403, to prevent jobId enumeration confirming existence).
+router.get('/status/:jobId', async (req, res) => {
+  try {
+    const agentId = req.query.agent_id;
+    if (!agentId) return res.status(400).json({ error: 'agent_id required' });
+
+    const job = await marketReportQueue.getJob(req.params.jobId);
+    if (!job || String(job.data.agent_id) !== String(agentId)) {
+      return res.status(404).json({ error: 'job not found' });
+    }
+
+    const state = await job.getState();
+
+    let position = null;
+    if (state === 'waiting') {
+      const waiting = await marketReportQueue.getWaiting();
+      const idx = waiting.findIndex(j => j.id === job.id);
+      position = idx === -1 ? null : idx;
+    }
+
+    const response = { status: state, position: position };
+    if (state === 'completed' && job.returnvalue) {
+      response.report_url = job.returnvalue.report_url;
+      response.report_id  = job.returnvalue.report_id;
+      response.expires_at = job.returnvalue.expires_at;
+    }
+    if (state === 'failed') {
+      response.error = job.failedReason || 'Report generation failed';
+    }
+
+    return res.json(response);
+  } catch (err) {
+    console.error('[marketReports] Status error:', err);
+    return res.status(500).json({ error: err.message || 'Status lookup failed' });
+  }
 });
 
 // ── GET /api/market-reports — list reports for the calling agent ─────────────
