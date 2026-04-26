@@ -466,19 +466,31 @@ def parse_pm_rentals(csv_path: str) -> pd.DataFrame:
 # DATA ANALYSIS ENGINE
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _filter_by_community(df: pd.DataFrame, community: str) -> pd.DataFrame:
+    """Match `community` as a substring across every plausibly-named location
+    column. PM exports have master_development AND sub_loc_1 / sub_loc_2 / etc;
+    only the first ever gets renamed to `area`, so a single-column filter misses
+    rows whose match lives on sub_loc_1 (e.g., user types 'Mudon Al Ranim' but
+    `area` was set from `master_development='Mudon'`)."""
+    if df is None or df.empty or not community:
+        return df.copy() if df is not None else pd.DataFrame()
+    AREA_COLS = ['area', 'sub_loc_1', 'sub_loc_2', 'sub_loc_3', 'sub_loc_4',
+                 'master_development', 'community', 'location', 'neighborhood',
+                 'neighbourhood', 'building', 'sub_area']
+    present = [c for c in AREA_COLS if c in df.columns]
+    if not present:
+        return df.copy()
+    search = df[present].fillna('').astype(str).agg(' | '.join, axis=1).str.lower()
+    target = community.strip().lower()
+    return df[search.str.contains(target, regex=False, na=False)].copy()
+
+
 def analyse(txn_df: pd.DataFrame, rental_df: pd.DataFrame, community: str) -> dict:
     """Compute all metrics from Property Monitor DataFrames."""
     out = {'community': community}
 
-    if 'area' in txn_df.columns:
-        txn = txn_df[txn_df['area'].str.contains(community, case=False, na=False)].copy()
-    else:
-        txn = txn_df.copy()
-
-    if 'area' in rental_df.columns:
-        rent = rental_df[rental_df['area'].str.contains(community, case=False, na=False)].copy()
-    else:
-        rent = rental_df.copy()
+    txn  = _filter_by_community(txn_df, community)
+    rent = _filter_by_community(rental_df, community)
 
     txn = txn[txn.get('transaction_type','Sale').astype(str).str.contains('Sale|sale|secondary|ready', na=False)] \
           if 'transaction_type' in txn.columns else txn
@@ -610,6 +622,87 @@ def analyse(txn_df: pd.DataFrame, rental_df: pd.DataFrame, community: str) -> di
         except Exception:
             pass
 
+    # ── Performance at a Glance — period-comparison highlights table ──────────
+    # Splits the filtered txns into the most recent 12 months vs the prior 12
+    # months. If we don't have dates we still emit a one-column table so the
+    # PDF stops showing the old 847/721 dummy fallback.
+    try:
+        if 'transaction_date' in txn.columns and txn['transaction_date'].notna().any():
+            last_date   = txn['transaction_date'].max()
+            mid_cutoff  = last_date - pd.DateOffset(months=12)
+            earlier_cut = last_date - pd.DateOffset(months=24)
+            curr = txn[txn['transaction_date'] > mid_cutoff]
+            prev = txn[(txn['transaction_date'] <= mid_cutoff) & (txn['transaction_date'] > earlier_cut)]
+            has_prev = len(prev) > 0
+            try:
+                out['txn_period'] = (
+                    f"{(mid_cutoff + pd.DateOffset(days=1)).strftime('%b %Y')} – "
+                    f"{last_date.strftime('%b %Y')}"
+                )
+            except Exception:
+                pass
+        else:
+            curr     = txn
+            prev     = txn.iloc[0:0]
+            has_prev = False
+
+        def _safe_mean(df, col):
+            if col not in df.columns: return None
+            v = df[col].dropna()
+            return float(v.mean()) if len(v) else None
+
+        def _safe_sum(df, col):
+            if col not in df.columns: return None
+            v = df[col].dropna()
+            return float(v.sum()) if len(v) else None
+
+        def _diff(c, p):
+            if not has_prev or p in (None, 0) or c is None or pd.isna(p) or pd.isna(c):
+                return '—'
+            try:
+                pct = (c - p) / p * 100
+            except Exception:
+                return '—'
+            if abs(pct) < 0.5:
+                return '—'
+            sign = '+' if pct > 0 else ''
+            arrow = '▲' if pct > 0 else '▼'
+            return f"{arrow} {sign}{pct:.1f}%"
+
+        c_count   = len(curr); p_count = len(prev)
+        c_avg_p   = _safe_mean(curr, 'price_aed'); p_avg_p = _safe_mean(prev, 'price_aed')
+        c_avg_psf = _safe_mean(curr, 'price_psf'); p_avg_psf = _safe_mean(prev, 'price_psf')
+        c_sum_p   = _safe_sum(curr, 'price_aed');  p_sum_p  = _safe_sum(prev, 'price_aed')
+
+        def _M(x):  return f'AED {x/1e6:.2f}M' if x is not None else '—'
+        def _B(x):
+            if x is None: return '—'
+            return f'AED {x/1e9:.2f}B' if x >= 1e9 else (f'AED {x/1e6:.2f}M' if x >= 1e6 else f'AED {x/1e3:.0f}K')
+        def _PSF(x): return f'AED {x:,.0f}' if x is not None else '—'
+
+        rows = [['Metric', 'This Period', 'Previous Period', 'Change']]
+        rows.append(['Total Transactions', str(c_count),
+                     str(p_count) if has_prev else '—', _diff(c_count, p_count)])
+        if c_avg_p is not None or p_avg_p is not None:
+            rows.append(['Avg Sale Price', _M(c_avg_p),
+                         _M(p_avg_p) if has_prev else '—', _diff(c_avg_p, p_avg_p)])
+        if c_avg_psf is not None or p_avg_psf is not None:
+            rows.append(['Avg Price / Sqft', _PSF(c_avg_psf),
+                         _PSF(p_avg_psf) if has_prev else '—', _diff(c_avg_psf, p_avg_psf)])
+        if c_sum_p is not None or p_sum_p is not None:
+            rows.append(['Total Sales Volume', _B(c_sum_p),
+                         _B(p_sum_p) if has_prev else '—', _diff(c_sum_p, p_sum_p)])
+
+        out['highlights'] = rows
+
+        # YoY price growth shown on the cover hero card — same split.
+        if c_avg_p and p_avg_p and p_avg_p > 0:
+            yoy_pct = (c_avg_p - p_avg_p) / p_avg_p * 100
+            out['yoy_growth'] = f"{'+' if yoy_pct >= 0 else ''}{yoy_pct:.1f}%"
+    except Exception:
+        # Highlights are nice-to-have; never let them break the report.
+        pass
+
     return out
 
 
@@ -630,6 +723,12 @@ def page_cover(data):
     els.append(Paragraph(' · '.join(c.upper() for c in communities), S('cover_community')))
     els.append(Spacer(1, 5*mm))
     els.append(Paragraph(data.get('report_period','Q1 2025'), S('cover_eyebrow')))
+    client_name = (data.get('client_name') or '').strip()
+    if client_name:
+        els.append(Spacer(1, 4*mm))
+        els.append(Paragraph(
+            'PREPARED EXCLUSIVELY FOR ' + client_name.upper(),
+            S('cover_eyebrow')))
     els.append(Spacer(1, 12*mm))
     els.append(HRFlowable(width='100%', thickness=0.5, color=colors.HexColor('#2A6B57'), spaceAfter=10*mm))
     m1v = data.get('avg_psf',        data.get('cover_m1v','AED 1,622'))

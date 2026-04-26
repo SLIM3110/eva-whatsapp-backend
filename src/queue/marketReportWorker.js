@@ -193,6 +193,7 @@ async function processJob(job) {
       report_period: d.report_period || new Date().toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }),
       agent_name: d.agent_name,
       agent_contact: d.agent_contact,
+      client_name: d.client_name || '',
       custom_location_notes: d.custom_location_notes,
     }, analysisResult, {
       exec_summary: geminiData.exec_summary || '',
