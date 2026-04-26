@@ -121,7 +121,18 @@ def bar_chart(labels, values, title, ylabel, highlight_last=True):
 def line_chart(labels, series, title):
     """series = [(values, label), ...]"""
     fig, ax = plt.subplots(figsize=(9.0, 3.6))
-    for i, (vals, lbl) in enumerate(series):
+    valid = [(v, l) for v, l in series if v and len(v) == len(labels)]
+    if not valid:
+        ax.text(0.5, 0.5, 'No data available for this period',
+                ha='center', va='center', fontsize=11, color='#6B6B6B',
+                transform=ax.transAxes)
+        ax.set_title(title, fontsize=11, fontweight='bold', color='#1B4D3E', pad=10)
+        ax.set_xticks([]); ax.set_yticks([])
+        ax.spines[['top','right','left','bottom']].set_visible(False)
+        ax.set_facecolor('white')
+        fig.patch.set_alpha(0); fig.tight_layout()
+        return fig
+    for i, (vals, lbl) in enumerate(valid):
         ax.plot(labels, vals, color=EVA_PALETTE[i], linewidth=2.4,
                 marker='o', markersize=5, markeredgecolor='white', markeredgewidth=1.0,
                 label=lbl, zorder=3)
