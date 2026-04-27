@@ -134,8 +134,10 @@ async function processJob(job) {
     let geminiData = {};
 
     if (geminiKey) {
+      const typology = (primaryData.property_typology || 'unknown').toString().toLowerCase();
       const metricsLines = [
         'Community:               ' + d.communities.join(', '),
+        'Property typology:       ' + typology + ' (auto-detected from unit_type / floor_level / plot data)',
         'Total transactions:      ' + (primaryData.total_transactions || 'N/A'),
         'Total sales volume:      ' + (primaryData.total_volume || 'N/A'),
         'Average sale price:      ' + (primaryData.avg_price || 'N/A'),
@@ -144,6 +146,28 @@ async function processJob(job) {
         'Gross rental yield:      ' + (primaryData.avg_yield || 'N/A'),
         netYield ? 'Net yield (after SC):    ' + netYield + ' (service charge ' + serviceChargeNote + ')' : null,
       ].filter(Boolean).join('\n');
+
+      let typologyConstraint = '';
+      if (typology === 'villa' || typology === 'low-rise') {
+        typologyConstraint =
+          "TYPOLOGY CONSTRAINT — STRICT: this is a villa / townhouse / low-rise community. " +
+          "Do NOT use language that only applies to apartment towers. Specifically, do NOT mention " +
+          "'high floor', 'upper floors', 'penthouse', 'sea view from balcony', 'tower amenities', " +
+          "or 'sky views'. Instead use position-within-cluster language where the data supports it: " +
+          "single-row, end-unit, corner plot, park-facing, road-facing, garden-facing, back-to-back, " +
+          "plot orientation, proximity to community amenities. If the data does not support a specific " +
+          "claim about position, do not invent one.\n\n";
+      } else if (typology === 'apartment') {
+        typologyConstraint =
+          "TYPOLOGY CONSTRAINT: this is an apartment community. Floor level, view orientation, " +
+          "corner vs interior unit, and tower position are the relevant value drivers. " +
+          "Do NOT mention 'plot size', 'single-row', 'road-facing villa', or 'end-of-row' framing.\n\n";
+      } else if (typology === 'mixed') {
+        typologyConstraint =
+          "TYPOLOGY CONSTRAINT: mixed community (villas + apartments). Where position-based language " +
+          "applies it must be tagged to villa stock; where floor-based language applies it must be " +
+          "tagged to apartment stock. Do not blend the two.\n\n";
+      }
 
       const agentBlock = [
         d.custom_location_notes ? 'Agent observation: "' + d.custom_location_notes + '"' : null,
@@ -183,7 +207,7 @@ async function processJob(job) {
       }
 
       const promptText = [
-        audienceFraming +
+        audienceFraming + typologyConstraint +
         'You are a senior Dubai real estate analyst writing a personalised market briefing for a property owner in ' + community + '.',
         'Your audience is NOT an analyst. They own a property and want to understand WHAT is happening in their specific market and WHY, in plain language with concrete, named context — not generic statements.',
         '',

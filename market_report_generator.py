@@ -8,7 +8,7 @@ Input: Property Monitor CSV exports (DLD data).
 # version of the generator produced it. If you see an old value here in a
 # PDF you just generated, the worker is running stale code or you opened a
 # cached PDF.
-REPORT_BUILD = '2026-04-27.polish-1'
+REPORT_BUILD = '2026-04-27.typology-1'
 
 import io, os, re, sys
 from datetime import datetime
@@ -824,18 +824,79 @@ def analyse(txn_df: pd.DataFrame, rental_df: pd.DataFrame, community: str) -> di
         out['rental_mix'] = rb['count'].tolist()
         out['rental_mix_labels'] = [br_label(r['bedrooms']) for _,r in rb.iterrows()]
 
-    # ── Location notes summary
-    loc_col = 'location_notes'
-    if loc_col in txn.columns:
-        notes = txn[loc_col].dropna().astype(str)
-        high_floor = notes.str.contains('high|upper|top', case=False).sum()
-        park_view  = notes.str.contains('park|garden|green', case=False).sum()
-        sea_view   = notes.str.contains('sea|marina|water|ocean', case=False).sum()
-        out['location_summary'] = {
-            'high_floor_pct': f"{high_floor/max(len(notes),1)*100:.0f}%",
-            'park_view_pct':  f"{park_view/max(len(notes),1)*100:.0f}%",
-            'sea_view_pct':   f"{sea_view/max(len(notes),1)*100:.0f}%",
-        }
+    # ── Detect property typology (apartment / villa / townhouse / mixed) ─────
+    # Drives downstream language: a G+1 villa community must NOT be described
+    # using 'high floor' / 'sea view' apartment vocabulary. We use unit_type
+    # first, fall back to floor_level distribution, then plot data.
+    typology = 'unknown'
+    try:
+        if 'unit_type' in txn.columns and txn['unit_type'].notna().any():
+            types = txn['unit_type'].astype(str).str.lower()
+            n = max(len(types), 1)
+            villa_share = types.str.contains(
+                'villa|townhouse|town house|town-house', regex=True, na=False).sum() / n
+            apt_share = types.str.contains(
+                'apartment|flat|studio', regex=True, na=False).sum() / n
+            if villa_share >= 0.6:    typology = 'villa'
+            elif apt_share  >= 0.6:   typology = 'apartment'
+            elif villa_share > 0.2 and apt_share > 0.2: typology = 'mixed'
+        if typology == 'unknown' and 'floor_level' in txn.columns:
+            floors = pd.to_numeric(txn['floor_level'], errors='coerce').dropna()
+            if len(floors):
+                mx = floors.max()
+                if   mx <= 2:  typology = 'villa'      # G+1, G+2 → villa/townhouse
+                elif mx <= 4:  typology = 'low-rise'
+                elif mx >= 10: typology = 'apartment'
+                else:          typology = 'mid-rise'
+        if typology == 'unknown' and 'plot_size_sqft' in txn.columns:
+            plots = pd.to_numeric(txn['plot_size_sqft'], errors='coerce').dropna()
+            if len(plots) >= 5 and plots.median() > 1500:
+                typology = 'villa'
+        out['property_typology'] = typology
+    except Exception:
+        out['property_typology'] = 'unknown'
+
+    # ── Typology-aware location signals ──────────────────────────────────────
+    # For villas/townhouses, surface position-within-community signals
+    # (single row, back-to-back, road/park facing) instead of high-floor.
+    # We scan free-text fields (location_notes / comments / sub_loc_3 / sub_loc_4)
+    # because PM doesn't always have a structured field for these.
+    try:
+        text_cols = [c for c in ['location_notes', 'comments', 'sub_loc_3', 'sub_loc_4', 'custom_view']
+                     if c in txn.columns]
+        if text_cols:
+            blob = txn[text_cols].fillna('').astype(str).agg(' | '.join, axis=1).str.lower()
+            n = max(len(blob), 1)
+            if typology == 'villa' or typology == 'low-rise' or typology == 'mixed':
+                single_row    = blob.str.contains(r'single\s*row|single-row|first\s*row',  regex=True, na=False).sum()
+                back_to_back  = blob.str.contains(r'back\s*to\s*back|back-to-back|backing\s+(to|onto)|back\s*facing|backfacing|rear\s*facing', regex=True, na=False).sum()
+                road_facing   = blob.str.contains(r'road\s*facing|road-facing|street\s*facing|main\s*road|near\s*road', regex=True, na=False).sum()
+                park_facing   = blob.str.contains(r'park\s*facing|park-facing|green\s*belt|garden\s*facing|park\s*view|green\s*view', regex=True, na=False).sum()
+                end_unit      = blob.str.contains(r'end\s*unit|end-unit|end\s*of\s*row|corner\s*unit|corner-unit', regex=True, na=False).sum()
+                pool_amenity  = blob.str.contains(r'pool|amenities|clubhouse|community\s*center', regex=True, na=False).sum()
+                out['location_summary'] = {
+                    'typology': typology,
+                    'single_row_pct':   f"{single_row/n*100:.0f}%",
+                    'back_to_back_pct': f"{back_to_back/n*100:.0f}%",
+                    'road_facing_pct':  f"{road_facing/n*100:.0f}%",
+                    'park_facing_pct':  f"{park_facing/n*100:.0f}%",
+                    'end_unit_pct':     f"{end_unit/n*100:.0f}%",
+                    'near_amenity_pct': f"{pool_amenity/n*100:.0f}%",
+                }
+            else:  # apartment / mid-rise / unknown — use floor + view signals
+                high_floor = blob.str.contains(r'high\s*floor|upper|top\s*floor|penthouse', regex=True, na=False).sum()
+                park_view  = blob.str.contains(r'park|garden|green', regex=True, na=False).sum()
+                sea_view   = blob.str.contains(r'sea|marina|water|ocean|burj\s*khalifa|skyline', regex=True, na=False).sum()
+                corner     = blob.str.contains(r'corner|end\s*unit', regex=True, na=False).sum()
+                out['location_summary'] = {
+                    'typology': typology,
+                    'high_floor_pct': f"{high_floor/n*100:.0f}%",
+                    'park_view_pct':  f"{park_view/n*100:.0f}%",
+                    'sea_view_pct':   f"{sea_view/n*100:.0f}%",
+                    'corner_pct':     f"{corner/n*100:.0f}%",
+                }
+    except Exception:
+        pass
 
     # ── YoY comparison — uses txn_all so the historical chart spans every
     # available year, not just the most recent 12 months. yoy_growth itself
@@ -1190,64 +1251,115 @@ def page_rental_analysis(data):
 
 
 def page_location_analysis(data):
+    typology     = (data.get('property_typology') or 'unknown').lower()
+    loc_summary  = data.get('location_summary')  or {}
+    view_premium = data.get('view_premium_data') or []
+    phase_data   = data.get('phase_data')        or []
+    custom_notes = (data.get('custom_location_notes') or '').strip()
+
+    # Skip the entire section if we have nothing genuine to say. The previous
+    # hardcoded "High Floor / Sea View / Marina View" guidance table has been
+    # removed because it lied about communities that don't have those features
+    # (e.g. Mudon villas at G+1 / G+2 don't have "high floors" at all).
+    if not loc_summary and not view_premium and not phase_data and not custom_notes:
+        return []
+
     els = section_header('Section 04', 'Location & Asset Analysis')
-    els.append(Paragraph(
-        'Not all units in a community sell for the same price. Location within the development '
-        '— including floor level, view, orientation, and proximity to amenities — can add or '
-        'subtract significant value. The data below is drawn directly from transaction records '
-        'and shows you exactly which attributes are commanding a premium in this market.', S('body')))
+
+    if typology == 'villa' or typology == 'low-rise':
+        intro = (
+            'Within a villa or townhouse community, value is driven less by elevation and far more '
+            'by position: whether the unit faces a park or a road, whether it sits in the front '
+            'row of the cluster, whether it backs onto another row, and how close it is to '
+            'amenities. The breakdown below reflects what the recorded transaction data shows '
+            'for this community — only signals that are actually present in the data are reported.')
+    elif typology == 'apartment':
+        intro = (
+            'Within an apartment building, value is heavily influenced by floor level, view '
+            'orientation, and unit position (corner vs interior). The breakdown below reflects '
+            'what the recorded transaction data shows for this community.')
+    elif typology == 'mixed':
+        intro = (
+            'This community contains both villas/townhouses and apartments, so the relevant '
+            'value drivers differ by unit type. The breakdown below covers position, view, '
+            'and (where applicable) floor level — only based on what is actually in the data.')
+    else:
+        intro = (
+            'Position within the development can add or subtract significant value. The '
+            'breakdown below reflects only signals that the recorded transaction data confirms '
+            'for this community.')
+    els.append(Paragraph(intro, S('body')))
     els.append(Spacer(1, 4*mm))
 
-    loc_data = data.get('location_data', [
-        ['Location Factor',           'Avg Premium vs Base', 'What It Means'],
-        ['High Floor (10+)',           '+8–14%',   'Buyers pay more for height, privacy, and views'],
-        ['Park / Garden View',         '+6–12%',   'Green outlooks are consistently the most in demand'],
-        ['Sea / Marina View',          '+10–18%',  'Premium views command the strongest uplift'],
-        ['Corner Unit',                '+4–7%',    'More windows and natural light drive preference'],
-        ['End of Row / Semi-Detached', '+5–9%',    'Extra privacy and outdoor space adds value'],
-        ['Ground Floor with Garden',   '+3–8%',    'Popular with families; direct garden access'],
-        ['Upgraded Fit-Out',           '+5–12%',   'Premium kitchens and finishes justify higher prices'],
-        ['Near Entrance / Amenities',  '+2–5%',    'Convenience factor valued by tenants and buyers'],
-    ])
-    els.append(data_table(loc_data[0], loc_data[1:], col_widths=[65*mm, 38*mm, 105*mm+10]))
-    els.append(Spacer(1, 5*mm))
-
-    view_premium = data.get('view_premium_data', [])
+    # Real, data-derived view/PSF table — stays exactly as before.
     if view_premium:
         els.append(Paragraph('Actual Price Premium by View Type', S('h2')))
         els.append(Paragraph(
-            'The table below is calculated directly from recorded transaction data for this '
-            'community. Each average PSF reflects only units with that specific view type so '
-            'you can see exactly which outlooks are commanding a premium.', S('body')))
+            'Calculated directly from recorded transactions in this community. Each average '
+            'PSF reflects only units with that specific view type so you can see which '
+            'outlooks are commanding a premium.', S('body')))
         view_rows = [[v, f"AED {p:,}"] for v, p in view_premium]
         els.append(data_table(['View Type', 'Avg Price per Sqft (AED)'],
                               view_rows, col_widths=[115*mm, 95*mm]))
         els.append(Spacer(1, 5*mm))
 
-    phase_data = data.get('phase_data', [])
     if phase_data:
         els.append(Paragraph('Performance by Phase / Sub-Development', S('h2')))
         els.append(Paragraph(
-            'Not every phase of a development performs equally. The breakdown below ranks each '
-            'phase by average price per square foot, highlighting where within the community '
-            'buyers are currently paying the most.', S('body')))
+            'Not every phase of a development performs equally. The breakdown below ranks '
+            'each phase by average price per square foot, highlighting where within the '
+            'community buyers are currently paying the most.', S('body')))
         els.append(data_table(
             ['Phase', 'Transactions', 'Avg Price', 'Avg PSF'],
             phase_data,
             col_widths=[85*mm, 42*mm, 52*mm, 42*mm]))
         els.append(Spacer(1, 5*mm))
 
-    loc_summary = data.get('location_summary', {})
+    # Typology-aware "What the data shows" paragraph
     if loc_summary:
         els.append(Paragraph('What the Data Shows for This Community', S('h2')))
-        els.append(Paragraph(
-            f"Of the transactions analysed, approximately {loc_summary.get('high_floor_pct','N/A')} "
-            f"involved high-floor units, {loc_summary.get('park_view_pct','N/A')} had park or garden "
-            f"facing positions, and {loc_summary.get('sea_view_pct','N/A')} featured sea or water views. "
-            'These proportions reflect the composition of available supply and indicate where '
-            'pricing pressure is most concentrated.', S('body')))
+        if typology == 'villa' or typology == 'low-rise' or typology == 'mixed':
+            parts = []
+            sr = loc_summary.get('single_row_pct')
+            bb = loc_summary.get('back_to_back_pct')
+            pf = loc_summary.get('park_facing_pct')
+            rf = loc_summary.get('road_facing_pct')
+            eu = loc_summary.get('end_unit_pct')
+            am = loc_summary.get('near_amenity_pct')
+            if sr and sr != '0%': parts.append(f"single-row position in {sr} of recorded units")
+            if bb and bb != '0%': parts.append(f"back-to-back / rear-facing position in {bb}")
+            if pf and pf != '0%': parts.append(f"park or garden facing in {pf}")
+            if rf and rf != '0%': parts.append(f"road or street facing in {rf}")
+            if eu and eu != '0%': parts.append(f"end / corner unit position in {eu}")
+            if am and am != '0%': parts.append(f"proximity to pool / amenity nodes referenced in {am}")
+            if parts:
+                els.append(Paragraph(
+                    'The recorded transactions show ' + '; '.join(parts) +
+                    '. These proportions reflect the supply mix actually trading in this community '
+                    'and indicate where buyer preference is concentrated.', S('body')))
+            else:
+                els.append(Paragraph(
+                    'Position-related signals (single-row, road or park facing, end unit) were '
+                    'not consistently recorded in the available transaction data for this '
+                    'community. Where such nuance is material, agent observations below should '
+                    'be relied on.', S('body')))
+        else:  # apartment-style
+            parts = []
+            hf = loc_summary.get('high_floor_pct')
+            pv = loc_summary.get('park_view_pct')
+            sv = loc_summary.get('sea_view_pct')
+            cn = loc_summary.get('corner_pct')
+            if hf and hf != '0%': parts.append(f"high-floor units in {hf} of records")
+            if pv and pv != '0%': parts.append(f"park or garden facing in {pv}")
+            if sv and sv != '0%': parts.append(f"sea or water views in {sv}")
+            if cn and cn != '0%': parts.append(f"corner or end unit in {cn}")
+            if parts:
+                els.append(Paragraph(
+                    'The recorded transactions show ' + '; '.join(parts) +
+                    '. These proportions reflect the supply mix actually trading and indicate '
+                    'where pricing pressure is concentrated.', S('body')))
+        els.append(Spacer(1, 4*mm))
 
-    custom_notes = data.get('custom_location_notes', '')
     if custom_notes:
         els.append(Paragraph('Agent Observations', S('h2')))
         els.append(Paragraph(custom_notes, S('callout')))

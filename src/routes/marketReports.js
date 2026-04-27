@@ -67,6 +67,13 @@ router.post('/generate', (req, res) => {
         return res.status(400).json({ error: 'agent_id is required.' });
       }
 
+      // The frontend exposes a single "Community Notes & AI Instructions"
+      // field so the agent can add facts about this specific community
+      // (e.g. "Mudon Al Ranim is G+1 only — no high-floor language"). Map
+      // it through to custom_location_notes (used as a verbatim callout in
+      // the Location section) when not separately provided.
+      const merged_location_notes = custom_location_notes || agent_instruction || '';
+
       const ts = Date.now();
 
       // ── Per-area CSV upload (new comparison-mode flow) ─────────────────────
@@ -164,7 +171,7 @@ router.post('/generate', (req, res) => {
         agent_id: String(agent_id),
         client_name: client_name,
         audience: audience,
-        custom_location_notes: custom_location_notes,
+        custom_location_notes: merged_location_notes,
         personalisation_prompt: personalisation_prompt,
         agent_instruction: agent_instruction,
         service_charge_psf: service_charge_psf,
