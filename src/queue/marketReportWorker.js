@@ -155,7 +155,35 @@ async function processJob(job) {
 
       const community = d.primaryCommunity || (d.communities && d.communities[0]) || 'this Dubai community';
 
+      const audience = (d.audience || 'neutral').toString().toLowerCase();
+      let audienceFraming = '';
+      if (audience === 'seller') {
+        audienceFraming =
+          "AUDIENCE: this briefing is for a SELLER who currently owns property in " + community + ". " +
+          "Frame every observation through 'what is this market doing FOR a seller right now?'. " +
+          "Where the data legitimately supports it, surface signals that favour selling — supply shortages, " +
+          "accelerating demand, peak pricing windows, the opportunity cost of holding through a possible " +
+          "rate or supply shift. Do not misrepresent data; if signals favour holding, say so plainly. " +
+          "But where the evidence supports acting, use language that helps the owner decide to list now: " +
+          "reference comparable transactions at attractive levels, days-on-market trends, the cost of waiting. " +
+          "End every major paragraph with the practical takeaway for them AS A SELLER.\n\n";
+      } else if (audience === 'buyer') {
+        audienceFraming =
+          "AUDIENCE: this briefing is for a BUYER evaluating acquisition in " + community + ". " +
+          "Frame every observation through 'what is this market doing FOR a buyer right now?'. " +
+          "Where the data legitimately supports it, surface entry-thesis signals — appreciation runway, " +
+          "infrastructure tailwinds, supply pipeline tightness, demographic shifts strengthening rent rolls. " +
+          "Do not cheerlead; if pricing looks stretched or yields are compressed, name it. " +
+          "Where the evidence supports buying, build conviction with comparable PSF levels, named drivers, " +
+          "and the macro backdrop. End every major paragraph with the practical takeaway AS A BUYER.\n\n";
+      } else {
+        audienceFraming =
+          "AUDIENCE: neutral — this briefing should serve either a seller or buyer. " +
+          "Be balanced; surface both sides where the data is mixed.\n\n";
+      }
+
       const promptText = [
+        audienceFraming +
         'You are a senior Dubai real estate analyst writing a personalised market briefing for a property owner in ' + community + '.',
         'Your audience is NOT an analyst. They own a property and want to understand WHAT is happening in their specific market and WHY, in plain language with concrete, named context — not generic statements.',
         '',
@@ -246,6 +274,7 @@ async function processJob(job) {
       client_name: d.client_name || '',
       custom_location_notes: d.custom_location_notes,
     }, analysisResult, {
+      audience: d.audience || 'neutral',
       exec_summary: geminiData.exec_summary || '',
       metrics_narrative: geminiData.metrics_narrative || '',
       volume_narrative: geminiData.volume_narrative || '',

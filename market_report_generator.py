@@ -4,6 +4,12 @@ Supports: single-community reports and multi-area comparison reports.
 Input: Property Monitor CSV exports (DLD data).
 """
 
+# Bump this on every meaningful change so the PDF footer can prove which
+# version of the generator produced it. If you see an old value here in a
+# PDF you just generated, the worker is running stale code or you opened a
+# cached PDF.
+REPORT_BUILD = '2026-04-27.polish-1'
+
 import io, os, re, sys
 from datetime import datetime
 import matplotlib
@@ -945,6 +951,72 @@ def analyse(txn_df: pd.DataFrame, rental_df: pd.DataFrame, community: str) -> di
         # Highlights are nice-to-have; never let them break the report.
         pass
 
+    # ── Real rental_data table (Property Type / Avg Annual Rent / Avg Sale
+    # Price / Gross Yield) computed from the actual rent and txn slices.
+    try:
+        if 'bedrooms' in rent.columns and 'annual_rent' in rent.columns and len(rent):
+            rb = rent.copy()
+            rb['_rent'] = pd.to_numeric(rb['annual_rent'], errors='coerce')
+            rb = rb[rb['_rent'].notna() & (rb['_rent'] > 0)]
+            grouped = rb.groupby(rb['bedrooms'].astype(str))['_rent'].agg(['mean', 'count']).reset_index()
+
+            def _br_label(b):
+                b = str(b)
+                return 'Studio' if b == '0' else (b + ' Bedroom' + ('s' if b != '1' else ''))
+
+            def _money_compact(x):
+                if x is None or pd.isna(x) or x <= 0: return '—'
+                if x >= 1e6: return f'AED {x/1e6:.2f}M'
+                if x >= 1e3: return f'AED {x/1e3:.0f}K'
+                return f'AED {x:,.0f}'
+
+            rental_rows = []
+            for _, r in grouped.iterrows():
+                if int(r['count']) < 3:  # ignore tiny samples
+                    continue
+                b = str(r['bedrooms'])
+                avg_rent_v = float(r['mean'])
+                # Match this-period sale price for the same bedroom count
+                avg_sale_str = '—'; yld_str = '—'
+                if 'bedrooms' in txn.columns and 'price_aed' in txn.columns:
+                    bsales = txn[(txn['bedrooms'].astype(str) == b)]
+                    if len(bsales) >= 3:
+                        avg_sale = bsales['price_aed'].dropna().mean()
+                        if pd.notna(avg_sale) and avg_sale > 0:
+                            avg_sale_str = _money_compact(avg_sale)
+                            yld_str = f"{(avg_rent_v / avg_sale) * 100:.1f}%"
+                rental_rows.append([_br_label(b), _money_compact(avg_rent_v),
+                                    avg_sale_str, yld_str, '—'])
+            if rental_rows:
+                out['rental_data'] = (
+                    [['Property Type', 'Avg Annual Rent', 'Avg Sale Price',
+                      'Gross Yield', 'Change YoY']] + rental_rows)
+    except Exception:
+        pass
+
+    # ── Diagnostic log so we can verify analyse output without opening the
+    # PDF. Surfaces in `pm2 logs eva-market-worker` since the worker pipes
+    # Python stderr to its own stderr.
+    try:
+        last_month = (out.get('months') or ['—'])[-1] if out.get('months') else '—'
+        sys.stderr.write(
+            '[analyse] community=' + repr(community)
+            + ' txn_all=' + str(len(txn_all))
+            + ' this_period=' + str(len(curr))
+            + ' prev_period=' + str(len(prev))
+            + ' total_txn_out=' + repr(out.get('total_transactions'))
+            + ' avg_price=' + repr(out.get('avg_price'))
+            + ' yoy_growth=' + repr(out.get('yoy_growth'))
+            + ' months=' + str(len(out.get('months', [])))
+            + ' last_month=' + repr(last_month)
+            + ' has_rental_data=' + str('rental_data' in out)
+            + ' has_highlights=' + str('highlights' in out)
+            + ' build=' + REPORT_BUILD
+            + '\n')
+        sys.stderr.flush()
+    except Exception:
+        pass
+
     return out
 
 
@@ -966,16 +1038,22 @@ def page_cover(data):
     els.append(Spacer(1, 5*mm))
     els.append(Paragraph(data.get('report_period','Q1 2025'), S('cover_eyebrow')))
     client_name = (data.get('client_name') or '').strip()
+    audience    = (data.get('audience') or '').strip().lower()
+    cover_extra = []
     if client_name:
+        cover_extra.append('PREPARED EXCLUSIVELY FOR ' + client_name.upper())
+    if audience == 'seller':
+        cover_extra.append("SELLER'S BRIEFING")
+    elif audience == 'buyer':
+        cover_extra.append("BUYER'S BRIEFING")
+    if cover_extra:
         els.append(Spacer(1, 4*mm))
-        els.append(Paragraph(
-            'PREPARED EXCLUSIVELY FOR ' + client_name.upper(),
-            S('cover_eyebrow')))
+        els.append(Paragraph(' · '.join(cover_extra), S('cover_eyebrow')))
     els.append(Spacer(1, 12*mm))
     els.append(HRFlowable(width='100%', thickness=0.5, color=colors.HexColor('#2A6B57'), spaceAfter=10*mm))
-    m1v = data.get('avg_psf',        data.get('cover_m1v','AED 1,622'))
-    m2v = data.get('yoy_growth',     data.get('cover_m2v','+18.4%'))
-    m3v = data.get('avg_yield',      data.get('cover_m3v','6.8%'))
+    m1v = data.get('avg_psf')    or data.get('cover_m1v') or '—'
+    m2v = data.get('yoy_growth') or data.get('cover_m2v') or '—'
+    m3v = data.get('avg_yield')  or data.get('cover_m3v') or '—'
     hero_value = ParagraphStyle('_hv', fontName='Helvetica-Bold', fontSize=19, textColor=WHITE, leading=23, alignment=TA_CENTER)
     hero_label = ParagraphStyle('_hl', fontName='Helvetica',      fontSize=7.5, textColor=GOLD, leading=10, alignment=TA_CENTER)
     hero_data = [[
@@ -1010,28 +1088,21 @@ def page_executive_summary(data):
         'to support informed investment and advisory decisions.'), S('body')))
     els.append(Spacer(1, 3*mm))
     els.append(metric_cards([
-        (data.get('total_transactions','847'),  'TOTAL TRANSACTIONS',   data.get('txn_period','Last 12 Months')),
-        (data.get('avg_price','AED 2.84M'),     'AVERAGE SALE PRICE',   data.get('yoy_growth','')),
-        (data.get('avg_psf','AED 1,622'),       'AVG PRICE PER SQFT',   ''),
-        (data.get('avg_yield','6.8%'),          'AVG RENTAL YIELD',     ''),
+        (data.get('total_transactions') or '—',  'TOTAL TRANSACTIONS', data.get('txn_period', 'Last 12 Months')),
+        (data.get('avg_price') or '—',           'AVERAGE SALE PRICE', data.get('yoy_growth') or ''),
+        (data.get('avg_psf') or '—',             'AVG PRICE PER SQFT', ''),
+        (data.get('avg_yield') or '—',           'AVG RENTAL YIELD',   ''),
     ]))
     els.append(Spacer(1, 4*mm))
     els.append(Paragraph(
         data.get('metrics_narrative') or narrative_executive_overview(data),
         S('body')))
     els.append(Spacer(1, 5*mm))
-    els.append(Paragraph('Performance at a Glance', S('h2')))
-    highlights = data.get('highlights', [
-        ['Metric',                 'This Period',  'Previous Period', 'Change'],
-        ['Total Transactions',     '847',          '721',             '▲ +17.5%'],
-        ['Avg Sale Price',         'AED 2.84M',    'AED 2.53M',       '▲ +12.3%'],
-        ['Avg Price / Sqft',       'AED 1,622',    'AED 1,492',       '▲ +8.7%'],
-        ['Total Sales Volume',     'AED 2.4B',     'AED 1.82B',       '▲ +31.9%'],
-        ['Avg Rental (2BR)',       'AED 142K',     'AED 128K',        '▲ +10.9%'],
-        ['Avg Gross Yield',        '6.8%',         '6.2%',            '▲ +0.6pp'],
-        ['Avg Days on Market',     '23 days',      '31 days',         '▼ Faster'],
-    ])
-    els.append(data_table(highlights[0], highlights[1:], col_widths=[88*mm,42*mm,42*mm,38*mm]))
+    highlights = data.get('highlights')
+    if highlights and len(highlights) > 1:
+        els.append(Paragraph('Performance at a Glance', S('h2')))
+        els.append(data_table(highlights[0], highlights[1:],
+                              col_widths=[88*mm, 42*mm, 42*mm, 38*mm]))
     els.append(PageBreak())
     return els
 
@@ -1195,11 +1266,11 @@ def page_investment_highlights(data):
     els.append(Spacer(1, 3*mm))
     sc_note = data.get('service_charge_note', '')
     els.append(metric_cards([
-        (data.get('avg_yield','6.8%'),
-         'GROSS RENTAL YIELD', 'vs 5.2% Dubai avg'),
-        (data.get('net_yield','–') if data.get('net_yield') else data.get('avg_yield','6.8%'),
+        (data.get('avg_yield') or '—',
+         'GROSS RENTAL YIELD', ''),
+        (data.get('net_yield') or '—',
          'NET RENTAL YIELD', f"after {sc_note} SC" if sc_note else 'estimated after costs'),
-        (data.get('roi_5yr','–'),
+        (data.get('roi_5yr') or '—',
          '5-YEAR TOTAL ROI', 'capital + income'),
     ]))
     if sc_note:
@@ -1210,20 +1281,26 @@ def page_investment_highlights(data):
             'Figures are indicative only.',
             S('body_small')))
     els.append(Spacer(1, 5*mm))
-    roi_data = data.get('roi_data', [
-        ['Area',                      'Gross Yield','Cap Growth','5-Yr ROI','Risk'],
-        [data.get('community','This Community'), '6.8%','+18.4%','62%','Low-Medium'],
-        ['Dubai Average (All)',        '5.2%','+12.1%','41%','Medium'],
-        ['Palm Jumeirah',              '4.8%','+21.3%','58%','Low'],
-        ['Downtown Dubai',             '5.5%','+14.7%','47%','Low-Medium'],
-        ['Jumeirah Village Circle',    '7.2%','+9.8%', '44%','Medium'],
-        ['Dubai Hills Estate',         '4.9%','+16.2%','49%','Low'],
-    ])
-    els.append(data_table(roi_data[0], roi_data[1:], col_widths=[68*mm,34*mm,34*mm,32*mm,40*mm+10], highlight_row=0))
-    els.append(Spacer(1, 4*mm))
-    if 'years' in data and 'yoy_price' in data:
-        fig = bar_chart(data['years'], data['yoy_price'],
-                        'Price Per Sqft - Historical Trend (AED)', 'AED / Sqft', highlight_last=True)
+    # Comparison ROI table is rendered ONLY when the analyse() step has
+    # produced real benchmark data (roi_data). The previous hardcoded
+    # fallback (Palm Jumeirah / Dubai Hills / etc.) was misleading because
+    # those numbers had no relationship to the uploaded community.
+    roi_data = data.get('roi_data')
+    if roi_data and len(roi_data) > 1:
+        els.append(data_table(roi_data[0], roi_data[1:],
+                              col_widths=[68*mm, 34*mm, 34*mm, 32*mm, 40*mm+10],
+                              highlight_row=0))
+        els.append(Spacer(1, 4*mm))
+
+    # Multi-year price-per-sqft trend — render only when we have at least
+    # three years of history. Fewer years would show as a degenerate chart
+    # (one or two bars) which looks unprofessional.
+    years_arr = data.get('years') or []
+    yoy_arr   = data.get('yoy_price') or []
+    if len(years_arr) >= 3 and len(yoy_arr) == len(years_arr):
+        fig = bar_chart(years_arr, yoy_arr,
+                        'Price Per Sqft — Historical Trend (AED)', 'AED / Sqft',
+                        highlight_last=True)
         els.append(fig_img(fig, PAGE_W-36*mm))
     els.append(PageBreak())
     return els
@@ -1238,12 +1315,55 @@ def page_market_outlook(data):
         'is coming next for this market.', S('body')))
     els.append(Spacer(1, 4*mm))
 
-    signals = data.get('outlook_signals', [
-        ('PRICE DIRECTION', 'Upward',   DARK_GREEN),
-        ('DEMAND LEVEL',    'High',     LIGHT_GREEN),
-        ('SUPPLY',          'Tight',    colors.HexColor('#8B6914')),
-        ('RENTAL OUTLOOK',  'Stable+',  DARK_GREEN),
-    ])
+    # Compute the four outlook indicators from the actual data so the
+    # badges reflect THIS community rather than a hardcoded "Upward / High /
+    # Tight / Stable+" cliché.
+    def _pct_or_none(s):
+        try: return float(str(s).replace('+','').replace('%','').replace('—','').strip()) if s else None
+        except Exception: return None
+
+    GOLD_AMBER = colors.HexColor('#8B6914')
+    RED        = colors.HexColor('#8B2A2A')
+
+    yoy_pct = _pct_or_none(data.get('yoy_growth'))
+    if yoy_pct is None:                  price_sig = ('Insufficient', GOLD_AMBER)
+    elif yoy_pct >=  8:                  price_sig = ('Strong Up',    DARK_GREEN)
+    elif yoy_pct >=  3:                  price_sig = ('Upward',       DARK_GREEN)
+    elif yoy_pct >= -1:                  price_sig = ('Flat',         GOLD_AMBER)
+    elif yoy_pct >= -5:                  price_sig = ('Easing',       GOLD_AMBER)
+    else:                                price_sig = ('Falling',      RED)
+
+    vol_arr = data.get('monthly_volume') or []
+    if len(vol_arr) >= 3:
+        third = max(len(vol_arr)//3, 1)
+        early = sum(vol_arr[:third]) / third
+        late  = sum(vol_arr[-third:]) / third
+        vpct  = ((late - early) / early * 100) if early > 0 else 0
+        if   vpct >=  20:                demand_sig = ('Accelerating', DARK_GREEN)
+        elif vpct >=   5:                demand_sig = ('Strong',       DARK_GREEN)
+        elif vpct >=  -5:                demand_sig = ('Steady',       LIGHT_GREEN)
+        elif vpct >= -20:                demand_sig = ('Easing',       GOLD_AMBER)
+        else:                            demand_sig = ('Cooling',      RED)
+    else:                                demand_sig = ('Insufficient', GOLD_AMBER)
+
+    # Supply: read from data if analyse provided it, otherwise narrate from
+    # the outlook_items so we never claim "Tight" without basis.
+    supply_label = (data.get('supply_signal') or 'See narrative').strip()
+    supply_sig   = (supply_label, GOLD_AMBER)
+
+    yld_pct = _pct_or_none(data.get('avg_yield'))
+    if yld_pct is None:                  rent_sig = ('No Data',  GOLD_AMBER)
+    elif yld_pct >= 7.5:                 rent_sig = ('Strong',   DARK_GREEN)
+    elif yld_pct >= 5.5:                 rent_sig = ('Stable',   DARK_GREEN)
+    elif yld_pct >= 4:                   rent_sig = ('Moderate', LIGHT_GREEN)
+    else:                                rent_sig = ('Weak',     GOLD_AMBER)
+
+    signals = [
+        ('PRICE DIRECTION', price_sig[0],  price_sig[1]),
+        ('DEMAND LEVEL',    demand_sig[0], demand_sig[1]),
+        ('SUPPLY',          supply_sig[0], supply_sig[1]),
+        ('RENTAL OUTLOOK',  rent_sig[0],   rent_sig[1]),
+    ]
     badge_cells = [[outlook_badge(f"{lbl}: {val}", col) for lbl, val, col in signals]]
     bt = Table(badge_cells, colWidths=[(PAGE_W-36*mm)/4]*4)
     bt.setStyle(TableStyle([('LEFTPADDING',(0,0),(-1,-1),3),('RIGHTPADDING',(0,0),(-1,-1),3)]))
@@ -1296,6 +1416,15 @@ def page_market_outlook(data):
         'Disclaimer: Forward-looking statements are based on publicly available data at time of '
         'publication and do not constitute financial advice. Past performance is not indicative '
         'of future results. Sources: DLD / Property Monitor, JLL, Knight Frank, Bloomberg.',
+        S('disclaimer')))
+    # Build / generation stamp — proves which version of the generator
+    # produced this PDF. If you ever see a stale value here in a freshly
+    # generated report, the worker is running stale code or you opened a
+    # cached PDF.
+    els.append(Spacer(1, 1*mm))
+    els.append(Paragraph(
+        'Generated ' + datetime.now().strftime('%Y-%m-%d %H:%M UTC') +
+        '  ·  Build ' + REPORT_BUILD,
         S('disclaimer')))
     els.append(PageBreak())
     return els
