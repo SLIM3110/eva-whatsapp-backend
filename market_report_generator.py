@@ -8,7 +8,7 @@ Input: Property Monitor CSV exports (DLD data).
 # version of the generator produced it. If you see an old value here in a
 # PDF you just generated, the worker is running stale code or you opened a
 # cached PDF.
-REPORT_BUILD = '2026-04-27.typology-1'
+REPORT_BUILD = '2026-04-28.evidence-1'
 
 import io, os, re, sys
 from datetime import datetime
@@ -569,15 +569,19 @@ PM_TRANSACTION_MAP = {
 }
 
 PM_RENTAL_MAP = {
-    'reg_date':      ['custom_date', 'registration date', 'contract date', 'date', 'start date'],
-    'property_type': ['unit_type', 'property type', 'type'],
-    'area':          ['master_development', 'sub_loc_1', 'area', 'community', 'location'],
-    'building':      ['sub_loc_2', 'building', 'project', 'building name'],
-    'bedrooms':      ['no_beds', 'bedrooms', 'beds', 'bed', 'rooms'],
-    'size_sqft':     ['unit_size_sqft', 'size', 'area sqft', 'sqft'],
-    'annual_rent':   ['annual amount', 'annual rent', 'rent (aed)', 'yearly rent', 'amount'],
-    'duration':      ['contract duration', 'duration', 'years', 'contract years'],
-    'location_notes':['comments', 'notes', 'remarks', 'view', 'features'],
+    'reg_date':         ['custom_date', 'start_date', 'start date', 'registration date',
+                         'contract date', 'date'],
+    'property_type':    ['unit_type', 'property type', 'type'],
+    'area':             ['master_development', 'sub_loc_1', 'area', 'community', 'location'],
+    'building':         ['sub_loc_2', 'building', 'project', 'building name'],
+    'bedrooms':         ['no_beds', 'bedrooms', 'beds', 'bed', 'rooms'],
+    'size_sqft':        ['unit_size_sqft', 'unit_size', 'size', 'area sqft', 'sqft'],
+    'annual_rent':      ['annualised_rental_price', 'annualized_rental_price',
+                         'annual amount', 'annual rent', 'rent (aed)', 'yearly rent', 'amount'],
+    'rent_psf':         ['rent_price_sqft_unit', 'rent psf', 'rent_per_sqft'],
+    'duration':         ['contract duration', 'duration', 'years', 'contract years'],
+    'registration_type':['evdnc_name', 'reg type', 'evidence type', 'listing_status'],
+    'location_notes':   ['comments', 'notes', 'remarks', 'view', 'features'],
 }
 
 def _match_column(df_cols, candidates):
@@ -716,18 +720,67 @@ def analyse(txn_df: pd.DataFrame, rental_df: pd.DataFrame, community: str) -> di
     txn  = _filter_by_community(txn_df, community)
     rent = _filter_by_community(rental_df, community)
 
-    # Exclude gifts and grants — they distort price aggregates because the
-    # "price" recorded for a gift is the declared transfer value, not a
-    # market sale price. The PM column for this is `evdnc_name`, which the
-    # parser renames to `registration_type`.
+    # ── Registration-type filter for SALES ──────────────────────────────────
+    # PM exports mix Title Deed / Oqood (real completed sales) with Active
+    # Listings (asking prices) and Pending Sales (SPA/MOU, not yet closed).
+    # Mixing these inflates transaction counts and pollutes price averages.
+    # We:
+    #   • track active listings separately (txn_listings) for an optional
+    #     "Listings vs Sales" comparison page.
+    #   • keep ONLY recognised completion types for the main analysis.
+    #   • drop gifts/grants because the recorded value is a declared
+    #     transfer value, not a market price.
+    txn_listings = txn.iloc[0:0].copy()  # default empty
     if 'registration_type' in txn.columns:
-        rt = txn['registration_type'].astype(str).str.lower()
-        txn = txn[~rt.str.contains('gift|grant', regex=True, na=False)].copy()
+        rt_full = txn['registration_type'].astype(str).str.lower().str.strip()
+        listings_mask = rt_full.str.contains(r'active.?listing|listing', regex=True, na=False)
+        txn_listings = txn[listings_mask].copy()
+
+        completion_mask = rt_full.str.contains(
+            r'title.?deed|oqood|sales\s*completed|completed|deed', regex=True, na=False)
+        gift_mask = rt_full.str.contains(r'gift|grant', regex=True, na=False)
+
+        if completion_mask.any():
+            txn = txn[completion_mask & ~gift_mask].copy()
+        else:
+            # No recognised completion label — exclude obvious non-deals
+            exclude_mask = (
+                listings_mask
+                | rt_full.str.contains(r'pending|spa|mou|in.?progress', regex=True, na=False)
+                | gift_mask
+            )
+            txn = txn[~exclude_mask].copy()
 
     # Legacy explicit-type filter for CSVs that include 'transaction_type'.
     if 'transaction_type' in txn.columns:
         txn = txn[txn['transaction_type'].astype(str).str.contains(
             'Sale|sale|secondary|ready', na=False)].copy()
+
+    # ── Registration-type filter for RENTALS ─────────────────────────────────
+    # Same pattern: active rental listings are asking prices, not market
+    # evidence. Only signed contracts are treated as transactions.
+    rent_listings = rent.iloc[0:0].copy()
+    if 'registration_type' in rent.columns:
+        rrt = rent['registration_type'].astype(str).str.lower().str.strip()
+        rlist_mask = rrt.str.contains(r'active.?listing|listing', regex=True, na=False)
+        rent_listings = rent[rlist_mask].copy()
+        rcontract_mask = rrt.str.contains(
+            r'rental\s*contract|tenancy\s*contract|lease|registered', regex=True, na=False)
+        if rcontract_mask.any():
+            rent = rent[rcontract_mask].copy()
+        else:
+            rent = rent[~rlist_mask].copy()
+
+    # ── Zero / null price scrub ──────────────────────────────────────────────
+    # Some PM rows carry a price of 0 (data-entry gaps). They must not
+    # contribute to averages or charts.
+    if 'price_aed' in txn.columns:
+        txn = txn[txn['price_aed'].notna() & (txn['price_aed'] > 0)].copy()
+    if 'price_aed' in txn_listings.columns:
+        txn_listings = txn_listings[
+            txn_listings['price_aed'].notna() & (txn_listings['price_aed'] > 0)].copy()
+    if 'annual_rent' in rent.columns:
+        rent = rent[rent['annual_rent'].notna() & (rent['annual_rent'] > 0)].copy()
 
     # ── Period split ─────────────────────────────────────────────────────────
     # 'This period' = the most recent 12 months of qualifying data. Every
@@ -1055,6 +1108,106 @@ def analyse(txn_df: pd.DataFrame, rental_df: pd.DataFrame, community: str) -> di
     except Exception:
         pass
 
+    # ── Listings vs Sales comparison (asking prices vs completed deals) ─────
+    # Computed unconditionally; the page builder decides whether to render
+    # based on the include_listings flag passed in via data.
+    try:
+        if (len(txn_listings) >= 5 and 'price_aed' in txn_listings.columns
+                and len(txn) >= 5 and 'price_aed' in txn.columns):
+            def _money(x):
+                if x is None or pd.isna(x) or x <= 0: return '—'
+                if x >= 1e6: return f'AED {x/1e6:.2f}M'
+                if x >= 1e3: return f'AED {x/1e3:.0f}K'
+                return f'AED {x:,.0f}'
+
+            ld = {
+                'listing_count': int(len(txn_listings)),
+                'sold_count':    int(len(txn)),
+                'avg_listing_price': _money(float(txn_listings['price_aed'].mean())),
+                'avg_sold_price':    _money(float(txn['price_aed'].mean())),
+                'median_listing_price': _money(float(txn_listings['price_aed'].median())),
+                'median_sold_price':    _money(float(txn['price_aed'].median())),
+            }
+            if 'price_psf' in txn_listings.columns and 'price_psf' in txn.columns:
+                lpsf = txn_listings['price_psf'].dropna()
+                spsf = txn['price_psf'].dropna()
+                if len(lpsf) and len(spsf):
+                    ld['avg_listing_psf'] = f'AED {lpsf.mean():,.0f}'
+                    ld['avg_sold_psf']    = f'AED {spsf.mean():,.0f}'
+                    if spsf.mean() > 0:
+                        ld['list_premium_pct'] = f'{(lpsf.mean()/spsf.mean()-1)*100:+.1f}%'
+
+            # By-bedroom listings vs sold table
+            if 'bedrooms' in txn.columns and 'bedrooms' in txn_listings.columns:
+                bed_rows = []
+                all_beds = sorted(set(txn['bedrooms'].astype(str)) | set(txn_listings['bedrooms'].astype(str)))
+                for b in all_beds:
+                    if b in ('nan', 'None', ''): continue
+                    sold_b = txn[txn['bedrooms'].astype(str) == b]
+                    list_b = txn_listings[txn_listings['bedrooms'].astype(str) == b]
+                    if len(sold_b) < 3 and len(list_b) < 3:
+                        continue
+                    label = 'Studio' if b == '0' else (b + ' Bedroom' + ('s' if b != '1' else ''))
+                    asked  = list_b['price_aed'].mean() if len(list_b) else None
+                    sold   = sold_b['price_aed'].mean() if len(sold_b) else None
+                    premium = '—'
+                    if asked is not None and sold is not None and sold > 0 and not pd.isna(asked) and not pd.isna(sold):
+                        premium = f'{(asked/sold-1)*100:+.1f}%'
+                    bed_rows.append([
+                        label,
+                        str(int(len(list_b))) if len(list_b) else '—',
+                        _money(asked) if asked is not None and not pd.isna(asked) else '—',
+                        str(int(len(sold_b))) if len(sold_b) else '—',
+                        _money(sold) if sold is not None and not pd.isna(sold) else '—',
+                        premium,
+                    ])
+                if bed_rows:
+                    ld['by_bedroom'] = (
+                        [['Bedroom Type', 'Listings', 'Avg Asking',
+                          'Sales', 'Avg Sold', 'Asking Premium']] + bed_rows)
+            out['listings_data'] = ld
+    except Exception:
+        pass
+
+    # ── Seller pricing recommendation by bedroom (used when audience=seller)
+    # Always computed; the page builder decides whether to render.
+    try:
+        if 'bedrooms' in txn.columns and 'price_aed' in txn.columns and len(txn) >= 5:
+            beds_series = txn['bedrooms'].astype(str)
+            rows = []
+            for b in sorted(set(beds_series)):
+                if b in ('nan', 'None', ''): continue
+                grp = txn[beds_series == b]
+                if len(grp) < 3:  # need at least 3 comparable sales
+                    continue
+                p25 = grp['price_aed'].quantile(0.25)
+                med = grp['price_aed'].median()
+                p75 = grp['price_aed'].quantile(0.75)
+                avg_psf = grp['price_psf'].mean() if 'price_psf' in grp.columns and grp['price_psf'].notna().any() else None
+                size_arr = grp['size_sqft'].dropna() if 'size_sqft' in grp.columns else pd.Series(dtype=float)
+                avg_size = size_arr.mean() if len(size_arr) else None
+
+                def _M(x):
+                    if x is None or pd.isna(x) or x <= 0: return '—'
+                    return f'AED {x/1e6:.2f}M' if x >= 1e6 else (f'AED {x/1e3:.0f}K' if x >= 1e3 else f'AED {x:,.0f}')
+
+                label = 'Studio' if b == '0' else (b + ' Bedroom' + ('s' if b != '1' else ''))
+                rows.append([
+                    label,
+                    str(int(len(grp))),
+                    _M(p25) + ' – ' + _M(p75),
+                    _M(med),
+                    f'AED {avg_psf:,.0f}' if avg_psf else '—',
+                    f'{int(avg_size):,} sqft' if avg_size else '—',
+                ])
+            if rows:
+                out['seller_pricing'] = (
+                    [['Bedroom Type', 'Comparable Sales',
+                      'Typical Range (25th–75th)', 'Median Sold',
+                      'Avg PSF', 'Avg Size']] + rows)
+    except Exception:
+        pass
+
     # ── Diagnostic log so we can verify analyse output without opening the
     # PDF. Surfaces in `pm2 logs eva-market-worker` since the worker pipes
     # Python stderr to its own stderr.
@@ -1072,6 +1225,9 @@ def analyse(txn_df: pd.DataFrame, rental_df: pd.DataFrame, community: str) -> di
             + ' last_month=' + repr(last_month)
             + ' has_rental_data=' + str('rental_data' in out)
             + ' has_highlights=' + str('highlights' in out)
+            + ' has_listings=' + str('listings_data' in out)
+            + ' has_seller_pricing=' + str('seller_pricing' in out)
+            + ' typology=' + repr(out.get('property_typology'))
             + ' build=' + REPORT_BUILD
             + '\n')
         sys.stderr.flush()
@@ -1164,6 +1320,30 @@ def page_executive_summary(data):
         els.append(Paragraph('Performance at a Glance', S('h2')))
         els.append(data_table(highlights[0], highlights[1:],
                               col_widths=[88*mm, 42*mm, 42*mm, 38*mm]))
+
+    # ── Recommended Pricing Range (only on Seller's Briefing) ────────────────
+    # The seller wants to know what to ask. We give them the comparable-sales
+    # band by bedroom drawn from completed Title-Deed/Oqood transactions only.
+    seller_pricing = data.get('seller_pricing')
+    if (data.get('audience', '').lower() == 'seller'
+            and seller_pricing and len(seller_pricing) > 1):
+        els.append(Spacer(1, 6*mm))
+        els.append(Paragraph('Recommended Pricing Range', S('h2')))
+        els.append(Paragraph(
+            'Based on completed sales (Title Deed and Oqood only) over the most recent 12 '
+            'months in this community. The 25th–75th percentile band is the realistic '
+            'asking range for a typical unit; the median is the most likely sale price.',
+            S('body')))
+        els.append(Spacer(1, 2*mm))
+        els.append(data_table(seller_pricing[0], seller_pricing[1:],
+                              col_widths=[36*mm, 26*mm, 50*mm, 30*mm, 26*mm, 28*mm]))
+        els.append(Spacer(1, 2*mm))
+        els.append(Paragraph(
+            'Note: pricing should also factor in unit-level variables this table cannot '
+            'capture — exact plot, position within the cluster (single-row, end-unit, '
+            'park-facing), upgrade level, and current condition. Adjust within or above '
+            'the range based on these characteristics.',
+            S('body_small')))
     els.append(PageBreak())
     return els
 
@@ -1206,6 +1386,42 @@ def page_transaction_analysis(data):
         els.append(Paragraph('Breakdown by Property Type', S('h2')))
         pt = data['prop_type_data']
         els.append(data_table(pt[0], pt[1:], col_widths=[52*mm,34*mm,34*mm,32*mm,34*mm,34*mm]))
+
+    # ── Active Listings vs Completed Sales (optional, behind a toggle) ───────
+    listings_data = data.get('listings_data') or {}
+    if data.get('include_listings') and listings_data:
+        els.append(Spacer(1, 6*mm))
+        els.append(Paragraph('Active Listings vs Completed Sales', S('h2')))
+        els.append(Paragraph(
+            f"There are currently {listings_data.get('listing_count', '—')} active listings "
+            f"in this community vs {listings_data.get('sold_count', '—')} completed sales "
+            f"recorded over the analysis window. The numbers below show the gap between "
+            f"what sellers are asking and what the market is actually paying — useful for "
+            f"calibrating asking prices and for buyers when judging negotiating room.",
+            S('body')))
+        els.append(Spacer(1, 3*mm))
+        # Headline table
+        headline_rows = [
+            ['Metric',          'Active Listings',                              'Completed Sales'],
+            ['Count',           str(listings_data.get('listing_count', '—')),  str(listings_data.get('sold_count', '—'))],
+            ['Avg Price',       listings_data.get('avg_listing_price', '—'),    listings_data.get('avg_sold_price', '—')],
+            ['Median Price',    listings_data.get('median_listing_price', '—'), listings_data.get('median_sold_price', '—')],
+        ]
+        if 'avg_listing_psf' in listings_data:
+            headline_rows.append(
+                ['Avg PSF', listings_data.get('avg_listing_psf', '—'), listings_data.get('avg_sold_psf', '—')])
+        if 'list_premium_pct' in listings_data:
+            headline_rows.append(
+                ['Asking premium over sold', listings_data.get('list_premium_pct', '—'), '—'])
+        els.append(data_table(headline_rows[0], headline_rows[1:],
+                              col_widths=[70*mm, 50*mm, 50*mm]))
+
+        if listings_data.get('by_bedroom'):
+            els.append(Spacer(1, 4*mm))
+            els.append(Paragraph('By Bedroom Type', S('h2')))
+            bb = listings_data['by_bedroom']
+            els.append(data_table(bb[0], bb[1:],
+                                  col_widths=[36*mm, 24*mm, 32*mm, 24*mm, 32*mm, 32*mm]))
     els.append(PageBreak())
     return els
 

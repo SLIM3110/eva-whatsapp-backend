@@ -299,6 +299,7 @@ async function processJob(job) {
       custom_location_notes: d.custom_location_notes,
     }, analysisResult, {
       audience: d.audience || 'neutral',
+      include_listings: !!d.include_listings,
       exec_summary: geminiData.exec_summary || '',
       metrics_narrative: geminiData.metrics_narrative || '',
       volume_narrative: geminiData.volume_narrative || '',

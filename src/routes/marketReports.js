@@ -55,11 +55,17 @@ router.post('/generate', (req, res) => {
         agent_id,
         client_name            = '',
         audience               = 'neutral',
+        include_listings       = 'true',
         custom_location_notes  = '',
         personalisation_prompt = '',
         agent_instruction      = '',
         service_charge_psf     = '',
       } = req.body;
+
+      const include_listings_bool =
+        include_listings === true ||
+        String(include_listings).toLowerCase() === 'true' ||
+        String(include_listings) === '1';
 
       const community = req.body.community_name || req.body.community || '';
 
@@ -171,6 +177,7 @@ router.post('/generate', (req, res) => {
         agent_id: String(agent_id),
         client_name: client_name,
         audience: audience,
+        include_listings: include_listings_bool,
         custom_location_notes: merged_location_notes,
         personalisation_prompt: personalisation_prompt,
         agent_instruction: agent_instruction,
