@@ -342,19 +342,30 @@ async function _processAgentInner(agentId) {
   }
 }
 
-// Runs every 5 minutes. For every agent Supabase thinks is "connected", checks
-// the real Green API state. If the instance is not authorized, marks the agent
-// as disconnected immediately so the dashboard and scheduler reflect reality.
+// Runs every 5 minutes for ALL active agents (not just those marked connected).
+// Reads the real Green API state and reconciles the DB with reality:
+//
+//   authorized                 → connected
+//   notAuthorized | blocked    → disconnected (genuine — needs QR re-scan)
+//   starting | sleepMode |     → leave DB unchanged (transient — Green API
+//   yellowCard | other            instance is recovering or rate-limited; not
+//                                 a real disconnect)
+//
+// Why we do not flip on every non-'authorized' state: previously a single
+// 'starting' (instance boot) reply caused the whole team to be marked
+// disconnected and skipped by the scheduler for a full day. Real disconnects
+// are notAuthorized (QR expired) or blocked (account banned).
 async function syncInstanceStatuses() {
   try {
     const res = await supabaseFetch(
-      '/profiles?whatsapp_session_status=eq.connected&is_active=eq.true' +
-      '&select=id,first_name,green_api_instance_id,green_api_token,green_api_url'
+      '/profiles?is_active=eq.true&role=in.(agent,super_admin)' +
+      '&green_api_instance_id=not.is.null' +
+      '&select=id,first_name,whatsapp_session_status,green_api_instance_id,green_api_token,green_api_url'
     );
     const agents = await res.json();
     if (!Array.isArray(agents) || agents.length === 0) return;
 
-    console.log('[health] Checking ' + agents.length + ' connected instance(s)...');
+    console.log('[health] Checking ' + agents.length + ' instance(s)...');
 
     await Promise.all(agents.map(async function(agent) {
       if (!agent.green_api_instance_id || !agent.green_api_token || !agent.green_api_url) return;
@@ -368,15 +379,33 @@ async function syncInstanceStatuses() {
         clearTimeout(timer);
         if (!stateRes.ok) throw new Error('HTTP ' + stateRes.status);
         const data = await stateRes.json();
-        if (data.stateInstance !== 'authorized') {
+        const state = data.stateInstance;
+
+        let desired = null;
+        if (state === 'authorized') {
+          desired = 'connected';
+        } else if (state === 'notAuthorized' || state === 'blocked') {
+          desired = 'disconnected';
+        }
+        // Any other state (starting, sleepMode, yellowCard, undefined) is
+        // treated as transient — leave DB unchanged.
+
+        if (desired === null) {
+          console.log('[health] ' + (agent.first_name || agent.id) + ' is ' + state + ' -- transient, leaving status unchanged');
+          return;
+        }
+
+        if (desired !== agent.whatsapp_session_status) {
           await supabaseFetch('/profiles?id=eq.' + agent.id, {
             method: 'PATCH',
             headers: { 'Prefer': 'return=minimal' },
-            body: JSON.stringify({ whatsapp_session_status: 'disconnected' })
+            body: JSON.stringify({ whatsapp_session_status: desired })
           });
-          console.log('[health] ' + (agent.first_name || agent.id) + ' (instance ' + agent.green_api_instance_id + ') is ' + data.stateInstance + ' -- marked disconnected');
+          console.log('[health] ' + (agent.first_name || agent.id) + ' is ' + state + ' -- ' +
+            agent.whatsapp_session_status + ' -> ' + desired);
         }
       } catch (e) {
+        // Network / timeout — do NOT change status on a transient failure.
         console.warn('[health] Could not check instance ' + agent.green_api_instance_id + ': ' + e.message);
       }
     }));
