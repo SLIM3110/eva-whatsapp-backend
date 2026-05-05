@@ -26,13 +26,10 @@ async function supabaseFetch(path) {
   }
 }
 
-// Liveness probe — process is up.
 router.get('/healthz', function(_req, res) {
   res.json({ ok: true, ts: new Date().toISOString() });
 });
 
-// Readiness probe — system actually working.
-// Returns 200 + status payload; 503 if outbound looks stalled during business hours.
 router.get('/readyz', async function(_req, res) {
   const STALE_HOURS = 4;
   try {
@@ -48,17 +45,35 @@ router.get('/readyz', async function(_req, res) {
     const queue = await supabaseFetch('/owner_contacts?select=id&message_status=eq.pending&limit=1000');
     const pending = Array.isArray(queue) ? queue.length : 0;
 
-    const uaeHour = parseInt(new Date().toLocaleString('en-US', { timeZone: 'Asia/Dubai', hour: '2-digit', hour12: false }).slice(0,2), 10);
+    const uaeNow  = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Dubai' }));
+    const uaeHour = uaeNow.getHours();
+    const uaeMin  = uaeNow.getMinutes();
     const inHours = uaeHour >= 9 && uaeHour < 21;
 
-    // Stalled = there is pending work AND we are inside business hours AND nothing has been sent in STALE_HOURS hours.
     const stalled = inHours && pending > 0 && (ageHrs == null || ageHrs > STALE_HOURS);
 
-    const body = {
+    var reason;
+    if (!inHours) {
+      var resumeHour = 9;
+      var sleepHrs = ((resumeHour + 24 - uaeHour) % 24);
+      if (sleepHrs === 0 && uaeMin > 0) sleepHrs = 24;
+      reason = 'Outside business hours (UAE ' + String(uaeHour).padStart(2,'0') + ':' + String(uaeMin).padStart(2,'0') + '). Sending resumes at 09:00 UAE (~' + sleepHrs + 'h).';
+    } else if (pending === 0) {
+      reason = 'No pending contacts in queue.';
+    } else if (connected === 0) {
+      reason = 'No agents connected. ' + pending + ' contacts waiting.';
+    } else if (stalled) {
+      reason = 'Stalled: ' + connected + ' agent(s) connected, ' + pending + ' pending, but no sends in ' + (ageHrs ? ageHrs.toFixed(1) : '?') + ' hours.';
+    } else {
+      reason = 'Healthy: ' + connected + ' agent(s) sending, ' + pending + ' pending.';
+    }
+
+    var body = {
       ok:                !stalled,
       stalled:           stalled,
+      reason:            reason,
       last_send_at:      last ? last.sent_at : null,
-      last_send_age_hrs: ageHrs,
+      last_send_age_hrs: ageHrs ? Math.round(ageHrs * 10) / 10 : null,
       pending:           pending,
       connected:         connected,
       total_active:      total,
