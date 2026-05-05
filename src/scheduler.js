@@ -448,6 +448,51 @@ async function syncInstanceStatuses() {
   }
 }
 
+
+// ── Batch cleanup: permanently delete completed/cancelled batches older than 7 days ──
+var _lastCleanupDate = null;
+
+async function cleanupOldBatches() {
+  var today = new Date().toISOString().slice(0, 10);
+  if (_lastCleanupDate === today) return;
+  _lastCleanupDate = today;
+
+  try {
+    var cutoff = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
+
+    // Completed batches older than 7 days
+    var completedRes = await supabaseFetch(
+      '/batches?select=id&pending_count=eq.0&sent_count=gt.0&completed_at=lt.' + cutoff
+    );
+    var completed = await completedRes.json();
+
+    // Archived/cancelled batches older than 7 days
+    var archivedRes = await supabaseFetch(
+      '/batches?select=id&is_archived=eq.true&archived_at=lt.' + cutoff
+    );
+    var archived = await archivedRes.json();
+
+    var idSet = {};
+    (completed || []).forEach(function(b) { idSet[b.id] = true; });
+    (archived  || []).forEach(function(b) { idSet[b.id] = true; });
+    var ids = Object.keys(idSet);
+
+    if (ids.length === 0) {
+      console.log('Cleanup: no batches older than 7 days to delete');
+      return;
+    }
+
+    for (var i = 0; i < ids.length; i++) {
+      await supabaseFetch('/owner_contacts?uploaded_batch_id=eq.' + ids[i], { method: 'DELETE' });
+      await supabaseFetch('/batches?id=eq.' + ids[i], { method: 'DELETE' });
+    }
+
+    console.log('Cleanup: permanently deleted ' + ids.length + ' old batch(es) + their contacts');
+  } catch (e) {
+    console.error('Cleanup error:', e.message);
+  }
+}
+
 function startScheduler() {
   if (TEST_MODE) {
     console.log('Scheduler: TEST MODE -- no time restrictions or gaps');
@@ -457,17 +502,21 @@ function startScheduler() {
       '  Hours:     09:00-21:00 UAE\n' +
       '  Daily cap: ' + DEFAULT_DAILY_CAP + ' (new accounts ramp up over 30 days)\n' +
       '  Gaps:      4-10 min (focused) | 10-22 min (normal) | 28-55 min (drifted) | lunch-aware\n' +
-      '  Health:    Green API status sync every 5 min'
+      '  Health:    Green API status sync every 5 min\n' +
+      '  Cleanup:   completed/cancelled batches deleted after 7 days'
     );
   }
 
   setInterval(tick, 60000);
 
-  // Run health check immediately on startup, then every 5 min
   syncInstanceStatuses();
   setTimeout(function() {
     setInterval(syncInstanceStatuses, 5 * 60 * 1000);
   }, 30000);
+
+  // Run cleanup once on startup, then once per tick (debounced to once/day internally)
+  cleanupOldBatches();
+  setInterval(cleanupOldBatches, 3600000);
 }
 
 module.exports = { startScheduler, tick };
