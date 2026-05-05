@@ -3,3 +3,7 @@ node_modules/
 sessions/
 .DS_Store
 Thumbs.db
+
+# scheduler patch backups
+*.bak.*
+*.bak2.*

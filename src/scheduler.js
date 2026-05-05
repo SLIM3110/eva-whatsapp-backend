@@ -283,16 +283,11 @@ async function _processAgentInner(agentId) {
     const finalMessage = await varyMessage(contact.generated_message);
 
     var sendResult;
-    if (contact.send_poll !== false) {
-      sendResult = await sessionManager.sendPoll(
-        agentId,
-        contact.number_1,
-        finalMessage,
-        ['Sell my property', 'Rent it out', 'Market data & report', 'Not interested']
-      );
-    } else {
-      sendResult = await sessionManager.sendMessage(agentId, contact.number_1, finalMessage);
-    }
+    // Plain WhatsApp message. Recipients reply by tapping numbered options or
+    // free text; webhook.js intent detection (sell/rent/market/stop) routes
+    // the reply to the correct status. No poll = no Green API char-limit cap
+    // and a much less spam-flagged delivery profile.
+    sendResult = await sessionManager.sendMessage(agentId, contact.number_1, finalMessage);
 
     const now = new Date().toISOString();
 
@@ -334,11 +329,31 @@ async function _processAgentInner(agentId) {
       console.warn('[scheduler] Agent ' + agentId + ' marked disconnected -- Green API returned unauthorized');
     }
 
+    const failNow = new Date().toISOString();
     await supabaseFetch('/owner_contacts?id=eq.' + contact.id, {
       method: 'PATCH',
       headers: { 'Prefer': 'return=minimal' },
-      body: JSON.stringify({ message_status: 'failed' })
+      body: JSON.stringify({
+        message_status: 'failed',
+        error_message: String(err.message || err).slice(0, 1000),
+        last_error_at: failNow,
+        attempts:      ((contact.attempts || 0) + 1)
+      })
     }).catch(function(e) { console.error('Failed to mark contact as failed:', e.message); });
+
+    // Also write a row into messages_log so failures are visible alongside successes.
+    await supabaseFetch('/messages_log', {
+      method: 'POST',
+      headers: { 'Prefer': 'return=minimal' },
+      body: JSON.stringify({
+        contact_id:      contact.id,
+        agent_id:        agentId,
+        number_used:     contact.number_1,
+        message_text:    null,
+        delivery_status: 'failed',
+        sent_at:         failNow
+      })
+    }).catch(function(e) { console.error('Failed to log failed send:', e.message); });
   }
 }
 
