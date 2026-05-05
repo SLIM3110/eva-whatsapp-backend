@@ -283,11 +283,30 @@ async function _processAgentInner(agentId) {
     const finalMessage = await varyMessage(contact.generated_message);
 
     var sendResult;
-    // Plain WhatsApp message. Recipients reply by tapping numbered options or
-    // free text; webhook.js intent detection (sell/rent/market/stop) routes
-    // the reply to the correct status. No poll = no Green API char-limit cap
-    // and a much less spam-flagged delivery profile.
-    sendResult = await sessionManager.sendMessage(agentId, contact.number_1, finalMessage);
+    // Three send modes:
+    //   - send_buttons = true  -> Green API sendButtons with 4 tappable replies
+    //   - send_poll     = true  -> LEGACY (kept for historical contacts only)
+    //                              Now routed through plain sendMessage too because
+    //                              poll bodies > 256 chars silently fail at Green API.
+    //   - default              -> plain sendMessage. Webhook intent detection still
+    //                              parses sell/rent/market/stop from the free-text reply.
+    if (contact.send_buttons === true) {
+      try {
+        sendResult = await sessionManager.sendButtons(
+          agentId,
+          contact.number_1,
+          finalMessage,
+          ['Sell my property', 'Rent it out', 'Not interested']
+        );
+      } catch (e) {
+        // If sendButtons fails for any reason (rate limit, body too long, instance tier
+        // issue) we still want the contact to receive SOMETHING — fall back to plain text.
+        console.warn('[scheduler] sendButtons failed for contact ' + contact.id + ' — falling back to sendMessage: ' + e.message);
+        sendResult = await sessionManager.sendMessage(agentId, contact.number_1, finalMessage);
+      }
+    } else {
+      sendResult = await sessionManager.sendMessage(agentId, contact.number_1, finalMessage);
+    }
 
     const now = new Date().toISOString();
 

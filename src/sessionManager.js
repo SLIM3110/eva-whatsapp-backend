@@ -308,4 +308,48 @@ async function restoreAllSessions() {
   console.log('Green API sessions are managed on Green API servers -- no local restore needed');
 }
 
-module.exports = { createSession, getStatus, getQR, sendMessage, sendPoll, disconnectSession, restoreAllSessions };
+
+async function sendButtons(agentId, number, body, buttons /* array of strings, max 4 */) {
+  let creds = clients.get(agentId);
+  if (!creds) {
+    const profile = await getAgentCredentials(agentId);
+    if (!profile) throw new Error('No Green API instance configured for this agent');
+    creds = { idInstance: profile.green_api_instance_id, apiTokenInstance: profile.green_api_token, apiUrl: profile.green_api_url };
+    clients.set(agentId, creds);
+  }
+
+  const cleanNumber = number.replace(/\D/g, '');
+  const chatId      = `${cleanNumber}@c.us`;
+
+  // Realistic typing pause
+  await sendTypingAction(creds, chatId);
+  const typingMs = typingDurationMs(body);
+  console.log(`[typing] Simulating ${Math.round(typingMs / 1000)}s typing for ${number}`);
+  await sleep(typingMs);
+
+  const payload = {
+    chatId,
+    message: body,
+    footer:  'EVA Real Estate',
+    buttons: buttons.map((label, i) => ({ buttonId: String(i + 1), buttonText: label })),
+  };
+
+  const res = await fetch(`${creds.apiUrl}/waInstance${creds.idInstance}/sendButtons/${creds.apiTokenInstance}`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify(payload),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    const errMsg = `Green API sendButtons error: ${JSON.stringify(data)}`;
+    if (res.status === 401 || /unauthorized|not.?authorized/i.test(JSON.stringify(data))) {
+      await updateSupabaseStatus(agentId, 'disconnected');
+      console.warn(`[sessionManager] Agent ${agentId} marked disconnected — sendButtons got unauthorized`);
+    }
+    throw new Error(errMsg);
+  }
+  console.log(`Buttons sent to ${number} for agent ${agentId}`);
+  return { messageId: data.idMessage, timestamp: new Date().toISOString() };
+}
+
+module.exports = { createSession, getStatus, getQR, sendMessage, sendButtons, sendPoll, disconnectSession, restoreAllSessions };
